@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "id": "ev1",
+      "name": "Chapitre 1",
+      "start": "1789-01-01",
+      "duration": 10,
+      "text": "",
+      "parent": null
+    },
+    {
+      "id": "ev3",
+      "name": "Chapitre 2",
+      "start": "1789-01-02",
+      "duration": 4,
+      "text": "",
+      "parent": null
+    }
+  ],
+  "links": [],
+  "markers": [
+    {
+      "id": "mk2",
+      "name": "Mort de Eliana",
+      "day": "1789-01-01",
+      "text": ""
+    }
+  ]
+}

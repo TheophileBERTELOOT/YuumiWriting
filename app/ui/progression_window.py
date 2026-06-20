@@ -1,0 +1,292 @@
+from __future__ import annotations
+
+import math
+from collections import defaultdict
+from datetime import date, timedelta
+from pathlib import Path
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app.core.progression import ProgressRecord, ProgressTracker
+
+
+class ChartWidget(QWidget):
+    def _frame(self, painter: QPainter, title: str) -> QRectF:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#292a2f"))
+        painter.setPen(QColor("#eeeeee"))
+        font = QFont(painter.font())
+        font.setBold(True)
+        font.setPointSize(11)
+        painter.setFont(font)
+        painter.drawText(18, 27, title)
+        return QRectF(58, 48, max(self.width() - 82, 10), max(self.height() - 88, 10))
+
+    @staticmethod
+    def _empty(painter: QPainter, area: QRectF) -> None:
+        painter.setPen(QColor("#aaaaaa"))
+        painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Pas encore assez de données")
+
+
+class ProjectionChart(ChartWidget):
+    def __init__(self, records: list[ProgressRecord], parent=None) -> None:
+        super().__init__(parent)
+        self.records = records
+        self.setMinimumHeight(340)
+
+    def _series(self) -> tuple[list[date], list[float]]:
+        if not self.records:
+            return [], []
+        by_day = {date.fromisoformat(record.day): float(record.words_written) for record in self.records}
+        first, last = min(by_day), max(max(by_day), date.today())
+        days, values = [], []
+        current = first
+        while current <= last:
+            days.append(current)
+            values.append(by_day.get(current, 0.0))
+            current += timedelta(days=1)
+        return days, values
+
+    @staticmethod
+    def _forecast(values: list[float]) -> tuple[list[float], list[float], list[float]]:
+        sample = values[-min(len(values), 14):]
+        count = len(sample)
+        if count == 1:
+            predicted = [sample[0]] * 7
+            uncertainty = max(sample[0] * 0.35, 1.0)
+        else:
+            mean_x = (count - 1) / 2
+            mean_y = sum(sample) / count
+            denominator = sum((index - mean_x) ** 2 for index in range(count))
+            slope = sum((index - mean_x) * (value - mean_y) for index, value in enumerate(sample)) / denominator if denominator else 0
+            intercept = mean_y - slope * mean_x
+            predicted = [max(intercept + slope * (count + step), 0.0) for step in range(7)]
+            residuals = [value - (intercept + slope * index) for index, value in enumerate(sample)]
+            uncertainty = max((sum(value * value for value in residuals) / max(count - 2, 1)) ** 0.5 * 1.96, 1.0)
+        lower = [max(value - uncertainty * math.sqrt(1 + step / 7), 0.0) for step, value in enumerate(predicted, 1)]
+        upper = [value + uncertainty * math.sqrt(1 + step / 7) for step, value in enumerate(predicted, 1)]
+        return predicted, lower, upper
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        area = self._frame(painter, "Mots écrits par jour et projection sur 7 jours")
+        days, values = self._series()
+        if not values:
+            self._empty(painter, area)
+            return
+        forecast, lower, upper = self._forecast(values)
+        all_values = values + upper
+        maximum = max(max(all_values), 10.0) * 1.1
+        total_points = len(values) + 7
+
+        def point(index: int, value: float) -> QPointF:
+            x = area.left() + (index / max(total_points - 1, 1)) * area.width()
+            y = area.bottom() - (value / maximum) * area.height()
+            return QPointF(x, y)
+
+        painter.setFont(QFont(painter.font().family(), 8))
+        for step in range(5):
+            value = maximum * step / 4
+            y = point(0, value).y()
+            painter.setPen(QPen(QColor("#44464d"), 1))
+            painter.drawLine(QPointF(area.left(), y), QPointF(area.right(), y))
+            painter.setPen(QColor("#bcbcbc"))
+            painter.drawText(QRectF(0, y - 8, 52, 16), Qt.AlignmentFlag.AlignRight, str(int(value)))
+
+        boundary = len(values) - 1
+        polygon = QPolygonF()
+        for step, value in enumerate(upper, 1):
+            polygon.append(point(boundary + step, value))
+        for step in range(7, 0, -1):
+            polygon.append(point(boundary + step, lower[step - 1]))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(124, 166, 217, 55))
+        painter.drawPolygon(polygon)
+
+        actual_path = QPainterPath(point(0, values[0]))
+        for index, value in enumerate(values[1:], 1):
+            actual_path.lineTo(point(index, value))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#76b37a"), 3))
+        painter.drawPath(actual_path)
+
+        projection_path = QPainterPath(point(boundary, values[-1]))
+        for step, value in enumerate(forecast, 1):
+            projection_path.lineTo(point(boundary + step, value))
+        painter.setPen(QPen(QColor("#7ca6d9"), 3, Qt.PenStyle.DashLine))
+        painter.drawPath(projection_path)
+        painter.setPen(QPen(QColor("#d6aa4c"), 1, Qt.PenStyle.DashLine))
+        boundary_x = point(boundary, 0).x()
+        painter.drawLine(QPointF(boundary_x, area.top()), QPointF(boundary_x, area.bottom()))
+
+        labels = days + [days[-1] + timedelta(days=step) for step in range(1, 8)]
+        for index in sorted({0, boundary, total_points - 1}):
+            x = point(index, 0).x()
+            painter.setPen(QColor("#cccccc"))
+            painter.drawText(QRectF(x - 38, area.bottom() + 7, 76, 18), Qt.AlignmentFlag.AlignCenter, labels[index].strftime("%d/%m"))
+
+
+class BarChart(ChartWidget):
+    def __init__(self, title: str, entries: list[tuple[str, int]], horizontal: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.title = title
+        self.entries = entries
+        self.horizontal = horizontal
+        self.setMinimumHeight(max(280, len(entries) * 30 + 80) if horizontal else 300)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        area = self._frame(painter, self.title)
+        if not self.entries:
+            self._empty(painter, area)
+            return
+        maximum = max(max(value for _, value in self.entries), 1)
+        painter.setFont(QFont(painter.font().family(), 8))
+        if self.horizontal:
+            label_width = min(max((len(label) for label, _ in self.entries), default=10) * 7, 230)
+            area.setLeft(max(area.left(), label_width + 20))
+            row_height = area.height() / len(self.entries)
+            for index, (label, value) in enumerate(self.entries):
+                y = area.top() + index * row_height + 4
+                width = area.width() * value / maximum
+                painter.fillRect(QRectF(area.left(), y, width, max(row_height - 8, 5)), QColor("#7f6bb3"))
+                painter.setPen(QColor("#dddddd"))
+                painter.drawText(QRectF(8, y, label_width, row_height - 8), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, label)
+                painter.drawText(QRectF(area.left() + width + 6, y, 70, row_height - 8), Qt.AlignmentFlag.AlignVCenter, str(value))
+        else:
+            bar_width = area.width() / max(len(self.entries), 1)
+            for index, (label, value) in enumerate(self.entries):
+                height = area.height() * value / maximum
+                x = area.left() + index * bar_width + 4
+                painter.fillRect(QRectF(x, area.bottom() - height, max(bar_width - 8, 3), height), QColor("#4f86c6"))
+                painter.setPen(QColor("#eeeeee"))
+                painter.drawText(QRectF(x, area.bottom() - height - 20, max(bar_width - 8, 30), 18), Qt.AlignmentFlag.AlignCenter, str(value))
+                painter.save()
+                painter.translate(x + bar_width / 2, area.bottom() + 8)
+                painter.rotate(-35)
+                painter.drawText(QRectF(-55, 0, 110, 18), Qt.AlignmentFlag.AlignCenter, label)
+                painter.restore()
+
+
+class ProgressionWindow(QMainWindow):
+    def __init__(self, project_root: Path, extensions: tuple[str, ...], stylesheet: str = "") -> None:
+        super().__init__()
+        self.tracker = ProgressTracker(project_root, extensions)
+        self.setWindowTitle(f"Progression — {project_root.name}")
+        self.resize(1100, 900)
+        if stylesheet:
+            self.setStyleSheet(stylesheet)
+
+        central = QWidget()
+        self.layout = QVBoxLayout(central)
+        header = QHBoxLayout()
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        self.summary.setStyleSheet("color: #f2f2f2;")
+        refresh = QPushButton("Actualiser")
+        refresh.clicked.connect(self.refresh_report)
+        header.addWidget(self.summary, 1)
+        header.addWidget(refresh)
+        self.chart_container = QWidget()
+        self.chart_layout = QVBoxLayout(self.chart_container)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.chart_container)
+        self.layout.addLayout(header)
+        self.layout.addWidget(scroll, 1)
+        self.setCentralWidget(central)
+        self.refresh_report()
+
+    @staticmethod
+    def _aggregates(records: list[ProgressRecord]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+        weeks: defaultdict[tuple[int, int], int] = defaultdict(int)
+        months: defaultdict[tuple[int, int], int] = defaultdict(int)
+        for record in records:
+            day = date.fromisoformat(record.day)
+            iso_year, iso_week, _ = day.isocalendar()
+            weeks[(iso_year, iso_week)] += record.words_written
+            months[(day.year, day.month)] += record.words_written
+        weekly = [(f"S{week:02d} {year}", value) for (year, week), value in sorted(weeks.items())]
+        monthly = [(f"{month:02d}/{year}", value) for (year, month), value in sorted(months.items())]
+        return weekly, monthly
+
+    @staticmethod
+    def _placeholder_records() -> list[ProgressRecord]:
+        """Produit une démonstration visuelle sans modifier le journal réel."""
+        records: list[ProgressRecord] = []
+        total = 18_400
+        last_files = {
+            "chapitres/chapitre_01.txt": 4_850,
+            "chapitres/chapitre_02.txt": 5_620,
+            "chapitres/chapitre_03.txt": 4_130,
+            "notes/personnages.md": 1_480,
+            "notes/univers.md": 2_320,
+        }
+        start = date.today() - timedelta(days=34)
+        for index in range(35):
+            current = start + timedelta(days=index)
+            if current.weekday() >= 5:
+                written = (0, 180, 260, 90)[index % 4]
+            else:
+                written = 310 + (index * 83) % 620
+                if index % 9 == 0:
+                    written = 0
+            total += written
+            records.append(
+                ProgressRecord(
+                    current.isoformat(),
+                    written,
+                    total,
+                    dict(last_files),
+                )
+            )
+        records[-1].files = last_files
+        records[-1].total_words = sum(last_files.values())
+        return records
+
+    def refresh_report(self) -> None:
+        try:
+            records = self.tracker.load_records()
+        except Exception as exc:
+            QMessageBox.critical(self, "Journal invalide", str(exc))
+            records = []
+        showing_placeholders = not records
+        if showing_placeholders:
+            records = self._placeholder_records()
+        while self.chart_layout.count():
+            item = self.chart_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        total_written = sum(record.words_written for record in records)
+        current_total = records[-1].total_words if records else 0
+        days_active = sum(record.words_written > 0 for record in records)
+        placeholder_notice = (
+            "<p style='color:#d6aa4c'><b>Données d’exemple</b> — "
+            "elles disparaîtront dès la première sauvegarde réelle.</p>"
+            if showing_placeholders
+            else ""
+        )
+        self.summary.setText(
+            f"<h2>Progression du roman</h2>{placeholder_notice}"
+            f"Total actuel : <b>{current_total:,}</b> mots · "
+            f"Ajouts suivis : <b>{total_written:,}</b> mots · "
+            f"Jours d’écriture : <b>{days_active}</b>"
+        )
+        weekly, monthly = self._aggregates(records)
+        files = sorted((records[-1].files.items() if records else []), key=lambda item: item[1], reverse=True)
+        self.chart_layout.addWidget(ProjectionChart(records))
+        self.chart_layout.addWidget(BarChart("Mots écrits par semaine", weekly[-16:]))
+        self.chart_layout.addWidget(BarChart("Mots écrits par mois", monthly[-12:]))
+        self.chart_layout.addWidget(BarChart("Nombre de mots par fichier", files, horizontal=True))
+        self.chart_layout.addStretch(1)

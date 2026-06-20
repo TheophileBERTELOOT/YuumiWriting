@@ -15,11 +15,18 @@ from PySide6.QtWidgets import (
 from app.analysis.registry import AnalyzerRegistry
 from app.analysis.analyzer_base import Indicator
 from app.core.document_manager import DocumentManager
+from app.core.progression import ProgressTracker
 from app.core.settings import AppSettings
+from app.llm.registry import LLMAnalysisRegistry
+from app.llm.storage import LLMAnalysisStorage
+from app.llm.worker import LLMAnalysisWorker
 from app.ui.editor import TextEditor
 from app.ui.file_tree import FileTree
 from app.ui.folder_report import FolderReportWindow
+from app.ui.graph_window import GraphWindow
 from app.ui.indicators_panel import IndicatorsPanel
+from app.ui.timeline_window import TimelineWindow
+from app.ui.progression_window import ProgressionWindow
 
 
 class NatureAnalysisSignals(QObject):
@@ -60,17 +67,37 @@ class MainWindow(QMainWindow):
         self.settings = AppSettings(default_project_root=project_root)
         self.document_manager = DocumentManager()
         self.analyzers = AnalyzerRegistry()
+        self.llm_registry = LLMAnalysisRegistry()
+        self.llm_storage = LLMAnalysisStorage(project_root)
+        self.progress_tracker = ProgressTracker(
+            project_root,
+            self.settings.accepted_extensions,
+        )
 
         # Indicateurs visibles dans la barre de droite.
         # Au départ tout est désactivé : l'utilisateur coche ce qu'il veut voir.
         self.enabled_indicator_names: set[str] = set()
         self.indicator_actions: dict[str, QAction] = {}
+        self.enabled_llm_indicator_names: set[str] = set()
+        self.llm_indicator_actions: dict[str, QAction] = {}
+        self.analysis_group_actions: dict[str, list[QAction]] = {}
+        self.analysis_group_selectors: dict[str, QAction] = {}
         self.analysis_pool = QThreadPool.globalInstance()
+        self.llm_pool = QThreadPool(self)
+        self.llm_pool.setMaxThreadCount(1)
         self._nature_generation = 0
         self._nature_worker_running = False
         self._pending_nature_request: tuple[int, str] | None = None
         self._nature_cache: tuple[str, list[Indicator]] | None = None
+        self._llm_worker_running = False
+        self._active_llm_worker: LLMAnalysisWorker | None = None
+        self._active_llm_source_path: Path | None = None
+        self._active_llm_fingerprint: tuple[str, str, int] | None = None
+        self._pending_llm_request: tuple[LLMAnalysisStorage, Path, str] | None = None
         self.folder_report_window: FolderReportWindow | None = None
+        self.graph_window: GraphWindow | None = None
+        self.timeline_window: TimelineWindow | None = None
+        self.progression_window: ProgressionWindow | None = None
 
         self.setWindowTitle("YuumiWriting")
 
@@ -124,40 +151,99 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
 
+        self._add_menu_separator(menu_bar)
+
         syntax_menu = menu_bar.addMenu("Syntaxe")
 
         self.analyze_action = QAction("Rafraîchir l'analyse", self)
         self.analyze_action.setShortcut("Ctrl+R")
         syntax_menu.addAction(self.analyze_action)
         syntax_menu.addSeparator()
+        self._add_group_selector(syntax_menu, "syntax")
 
         repetition_menu = menu_bar.addMenu("Répétition")
+        self._add_group_selector(repetition_menu, "repetition")
         repetition_indicators = {
             "Répétition de phrases",
             "Répétition de mots",
         }
         grammar_menu = menu_bar.addMenu("Grammaire")
+        self._add_group_selector(grammar_menu, "grammar")
         grammar_indicators = {"Nature"}
 
         for indicator_name in self.analyzers.available_indicator_names():
+            if indicator_name in repetition_indicators:
+                target_menu = repetition_menu
+                group_name = "repetition"
+            elif indicator_name in grammar_indicators:
+                target_menu = grammar_menu
+                group_name = "grammar"
+            else:
+                target_menu = syntax_menu
+                group_name = "syntax"
             action = QAction(indicator_name, self)
             action.setCheckable(True)
             action.setChecked(False)
             action.toggled.connect(
-                lambda checked, name=indicator_name: self._toggle_indicator(name, checked)
+                lambda checked, name=indicator_name, group=group_name: self._toggle_indicator(
+                    name,
+                    checked,
+                    group,
+                )
             )
             self.indicator_actions[indicator_name] = action
-            if indicator_name in repetition_indicators:
-                target_menu = repetition_menu
-            elif indicator_name in grammar_indicators:
-                target_menu = grammar_menu
-            else:
-                target_menu = syntax_menu
+            self.analysis_group_actions[group_name].append(action)
             target_menu.addAction(action)
 
-        menu_bar.addSeparator()
+        llm_menu = menu_bar.addMenu("Analyses IA")
+        self._add_group_selector(llm_menu, "llm")
+        if not self.llm_registry.definitions:
+            empty_llm_action = QAction("Aucune analyse configurée", self)
+            empty_llm_action.setEnabled(False)
+            llm_menu.addAction(empty_llm_action)
+        for definition in self.llm_registry.definitions:
+            action = QAction(definition.name, self)
+            action.setCheckable(True)
+            action.toggled.connect(
+                lambda checked, name=definition.name: self._toggle_llm_indicator(
+                    name,
+                    checked,
+                    "llm",
+                )
+            )
+            self.llm_indicator_actions[definition.name] = action
+            self.analysis_group_actions["llm"].append(action)
+            llm_menu.addAction(action)
+
+        self._add_menu_separator(menu_bar)
         self.folder_report_action = QAction("Rapport du dossier", self)
         menu_bar.addAction(self.folder_report_action)
+        self.graph_action = QAction("Graphe", self)
+        menu_bar.addAction(self.graph_action)
+        self.timeline_action = QAction("Timeline", self)
+        menu_bar.addAction(self.timeline_action)
+        self.progression_action = QAction("Progression", self)
+        menu_bar.addAction(self.progression_action)
+
+    def _add_group_selector(self, menu, group_name: str) -> None:
+        selector = QAction("Tout sélectionner", self)
+        selector.setCheckable(True)
+        selector.toggled.connect(
+            lambda checked, group=group_name: self._toggle_analysis_group(
+                group,
+                checked,
+            )
+        )
+        self.analysis_group_selectors[group_name] = selector
+        self.analysis_group_actions[group_name] = []
+        menu.addAction(selector)
+        menu.addSeparator()
+
+    def _add_menu_separator(self, menu_bar) -> None:
+        """Ajoute un séparateur que QMenuBar dessine comme un élément natif."""
+        separator = QAction("│", menu_bar)
+        separator.setToolTip("")
+        menu_bar.addAction(separator)
 
     def _build_layout(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -183,6 +269,9 @@ class MainWindow(QMainWindow):
         self.quit_action.triggered.connect(self.close)
         self.analyze_action.triggered.connect(self.refresh_indicators)
         self.folder_report_action.triggered.connect(self.open_folder_report)
+        self.graph_action.triggered.connect(self.open_graph)
+        self.timeline_action.triggered.connect(self.open_timeline)
+        self.progression_action.triggered.connect(self.open_progression)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -241,6 +330,10 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 color: #eeeeee;
             }
+            QWidget#indicatorCard QLabel,
+            QWidget#indicatorCard QToolButton {
+                color: #eeeeee;
+            }
             QWidget#indicatorCard[severity="success"] {
                 border-left: 5px solid #76b37a;
             }
@@ -260,12 +353,45 @@ class MainWindow(QMainWindow):
             """
         )
 
-    def _toggle_indicator(self, indicator_name: str, checked: bool) -> None:
+    def _toggle_indicator(
+        self,
+        indicator_name: str,
+        checked: bool,
+        group_name: str,
+    ) -> None:
         if checked:
             self.enabled_indicator_names.add(indicator_name)
         else:
             self.enabled_indicator_names.discard(indicator_name)
+        self._sync_group_selector(group_name)
         self.refresh_indicators()
+
+    def _toggle_analysis_group(self, group_name: str, checked: bool) -> None:
+        actions = self.analysis_group_actions.get(group_name, [])
+        for action in actions:
+            action.blockSignals(True)
+            action.setChecked(checked)
+            action.blockSignals(False)
+            if group_name == "llm":
+                if checked:
+                    self.enabled_llm_indicator_names.add(action.text())
+                else:
+                    self.enabled_llm_indicator_names.discard(action.text())
+            elif checked:
+                self.enabled_indicator_names.add(action.text())
+            else:
+                self.enabled_indicator_names.discard(action.text())
+        self.refresh_indicators()
+
+    def _sync_group_selector(self, group_name: str) -> None:
+        selector = self.analysis_group_selectors.get(group_name)
+        actions = self.analysis_group_actions.get(group_name, [])
+        if selector is None:
+            return
+        all_checked = bool(actions) and all(action.isChecked() for action in actions)
+        selector.blockSignals(True)
+        selector.setChecked(all_checked)
+        selector.blockSignals(False)
 
     def _on_text_changed(self) -> None:
         self.document_manager.mark_dirty()
@@ -306,6 +432,11 @@ class MainWindow(QMainWindow):
         project_root = Path(folder)
         self.settings.default_project_root = project_root
         self.file_tree.set_project_root(project_root)
+        self.progress_tracker = ProgressTracker(
+            project_root,
+            self.settings.accepted_extensions,
+        )
+        self.llm_storage = LLMAnalysisStorage(project_root)
         self.status_label.setText(f"Dossier ouvert : {project_root.name}")
 
     def open_file_dialog(self) -> None:
@@ -349,7 +480,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erreur de sauvegarde", str(exc))
             return
         self._update_window_title()
+        self._record_progress()
         self.status_label.setText(f"Sauvegardé : {path.name}")
+        self._request_llm_analysis(path, self.editor.text())
 
     def save_as_dialog(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(
@@ -366,7 +499,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erreur de sauvegarde", str(exc))
             return
         self._update_window_title()
+        self._record_progress()
         self.status_label.setText(f"Sauvegardé : {path.name}")
+        self._request_llm_analysis(path, self.editor.text())
 
     def open_folder_report(self) -> None:
         self.folder_report_window = FolderReportWindow(
@@ -379,6 +514,256 @@ class MainWindow(QMainWindow):
         self.folder_report_window.raise_()
         self.folder_report_window.activateWindow()
 
+    def open_graph(self) -> None:
+        self.graph_window = GraphWindow(
+            self.file_tree.project_root,
+            self.styleSheet(),
+        )
+        self.graph_window.show()
+        self.graph_window.raise_()
+        self.graph_window.activateWindow()
+
+    def open_timeline(self) -> None:
+        self.timeline_window = TimelineWindow(
+            self.file_tree.project_root,
+            self.styleSheet(),
+        )
+        self.timeline_window.show()
+        self.timeline_window.raise_()
+        self.timeline_window.activateWindow()
+
+    def open_progression(self) -> None:
+        self.progression_window = ProgressionWindow(
+            self.file_tree.project_root,
+            self.settings.accepted_extensions,
+            self.styleSheet(),
+        )
+        self.progression_window.show()
+        self.progression_window.raise_()
+        self.progression_window.activateWindow()
+
+    def _record_progress(self) -> None:
+        try:
+            self.progress_tracker.record_save()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Suivi de progression",
+                "Le document a été sauvegardé, mais le journal de progression "
+                f"n’a pas pu être mis à jour : {exc}",
+            )
+
+    def _toggle_llm_indicator(
+        self,
+        indicator_name: str,
+        checked: bool,
+        group_name: str,
+    ) -> None:
+        if checked:
+            self.enabled_llm_indicator_names.add(indicator_name)
+        else:
+            self.enabled_llm_indicator_names.discard(indicator_name)
+        self._sync_group_selector(group_name)
+        self.refresh_indicators()
+
+    def _cached_llm_indicators(self) -> list[Indicator]:
+        selected_names = self._selected_llm_indicator_names()
+        if not selected_names:
+            return []
+        source_path = self.document_manager.current_path
+        if source_path is None:
+            return []
+        indicators: list[Indicator] = []
+        if (
+            self._llm_worker_running
+            and self._active_llm_source_path is not None
+            and self._active_llm_source_path.resolve() == source_path.resolve()
+        ):
+            indicators.append(
+                Indicator(
+                    "Analyses IA",
+                    "Analyse en cours…",
+                    "Une seule requête OpenAI traite toutes les analyses IA.",
+                    "info",
+                )
+            )
+        try:
+            cached = self.llm_storage.load(source_path)
+        except Exception as exc:
+            indicators.append(
+                Indicator(
+                    "Analyses IA",
+                    "Cache illisible",
+                    str(exc),
+                    "danger",
+                )
+            )
+            return indicators
+
+        for name in selected_names:
+            definition = self.llm_registry.by_name(name)
+            if definition is None:
+                continue
+            result = cached["analyses"].get(definition.key) if cached else None
+            if not isinstance(result, dict):
+                indicators.append(
+                    Indicator(
+                        name,
+                        "En attente d’une sauvegarde",
+                        "Utilisez Ctrl+S pour lancer la prochaine analyse IA.",
+                        "info",
+                    )
+                )
+                continue
+            if "score" in result:
+                try:
+                    score = min(max(float(result["score"]), 0.0), 1.0)
+                except (TypeError, ValueError):
+                    score = 0.0
+                analysis = str(result.get("analysis", ""))
+                examples = result.get("examples", [])
+                if isinstance(examples, list) and examples:
+                    example_text = "\n".join(
+                        f"• « {example} »" for example in examples
+                    )
+                    detail = f"{analysis}\n\nExemples :\n{example_text}"
+                else:
+                    detail = analysis
+                severity = (
+                    "success"
+                    if score >= 0.8
+                    else "info"
+                    if score >= 0.55
+                    else "warning"
+                    if score >= 0.3
+                    else "danger"
+                )
+                indicators.append(
+                    Indicator(
+                        name,
+                        f"Score : {score:.2f} / 1",
+                        detail,
+                        severity,
+                    )
+                )
+                continue
+            indicators.append(
+                Indicator(
+                    name,
+                    str(result.get("value", "")),
+                    str(result.get("detail", "")),
+                    str(result.get("severity", "info")),
+                )
+            )
+        return indicators
+
+    def _selected_llm_indicator_names(self) -> set[str]:
+        """Prend les cases visibles comme source de vérité pour l'affichage."""
+        return {
+            name
+            for name, action in self.llm_indicator_actions.items()
+            if action.isChecked()
+        }
+
+    def _request_llm_analysis(self, source_path: Path, text: str) -> None:
+        definitions = self.llm_registry.definitions
+        if not self._selected_llm_indicator_names() or not definitions:
+            return
+        from app.llm.service import LLMAnalysisService
+
+        prompt_version = LLMAnalysisService.PROMPT_VERSION
+        expected_keys = {definition.key for definition in definitions}
+        fingerprint = (
+            str(self.llm_storage.cache_path(source_path)),
+            self.llm_storage.content_hash(text),
+            prompt_version,
+        )
+        if fingerprint == self._active_llm_fingerprint:
+            return
+        try:
+            if self.llm_storage.is_current(
+                source_path,
+                text,
+                expected_keys,
+                prompt_version,
+            ):
+                self.refresh_indicators()
+                return
+        except Exception:
+            pass
+        request = (self.llm_storage, source_path, text)
+        if self._llm_worker_running:
+            self._pending_llm_request = request
+            return
+        self._start_llm_analysis(*request)
+
+    def _start_llm_analysis(
+        self,
+        storage: LLMAnalysisStorage,
+        source_path: Path,
+        text: str,
+    ) -> None:
+        self._llm_worker_running = True
+        self._active_llm_source_path = source_path
+        from app.llm.service import LLMAnalysisService
+
+        self._active_llm_fingerprint = (
+            str(storage.cache_path(source_path)),
+            storage.content_hash(text),
+            LLMAnalysisService.PROMPT_VERSION,
+        )
+        self.status_label.setText(f"Analyse IA en cours : {source_path.name}…")
+        worker = LLMAnalysisWorker(
+            storage,
+            source_path,
+            text,
+            self.llm_registry.definitions,
+        )
+        worker.signals.finished.connect(self._on_llm_analysis_finished)
+        worker.signals.failed.connect(self._on_llm_analysis_failed)
+        self._active_llm_worker = worker
+        self.refresh_indicators()
+        self.llm_pool.start(worker)
+
+    def _on_llm_analysis_finished(self, source_path: object, analyses: object) -> None:
+        self._llm_worker_running = False
+        self._active_llm_worker = None
+        self._active_llm_source_path = None
+        self._active_llm_fingerprint = None
+        try:
+            path = Path(source_path) if source_path is not None else None
+        except TypeError:
+            path = None
+        if path is not None:
+            self.status_label.setText(f"Analyse IA sauvegardée : {path.name}")
+        # Recharge toujours le cache du document actuellement affiché. Cela
+        # reste correct même si l'utilisateur a changé d'onglet entre-temps.
+        self.refresh_indicators()
+        self._start_pending_llm_request()
+
+    def _on_llm_analysis_failed(self, source_path: object, message: str) -> None:
+        self._llm_worker_running = False
+        self._active_llm_worker = None
+        self._active_llm_source_path = None
+        self._active_llm_fingerprint = None
+        try:
+            name = Path(source_path).name if source_path is not None else "le document"
+        except TypeError:
+            name = "le document"
+        QMessageBox.warning(
+            self,
+            "Analyse IA impossible",
+            f"L’analyse de {name} a échoué : {message}",
+        )
+        self._start_pending_llm_request()
+
+    def _start_pending_llm_request(self) -> None:
+        if self._pending_llm_request is None:
+            return
+        pending = self._pending_llm_request
+        self._pending_llm_request = None
+        self._start_llm_analysis(*pending)
+
     def refresh_indicators(self) -> None:
         text = self.editor.text()
         regular_names = self.enabled_indicator_names - {"Nature"}
@@ -386,6 +771,7 @@ class MainWindow(QMainWindow):
             text,
             regular_names,
         )
+        visible_indicators.extend(self._cached_llm_indicators())
 
         if "Nature" not in self.enabled_indicator_names:
             self._nature_generation += 1

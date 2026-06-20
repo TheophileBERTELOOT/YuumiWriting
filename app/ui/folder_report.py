@@ -10,7 +10,17 @@ from app.analysis.registry import AnalyzerRegistry
 from app.ui.indicators_panel import IndicatorsPanel
 
 
-IGNORED_DIRECTORIES = {".git", ".venv", "venv", "__pycache__", "node_modules"}
+IGNORED_DIRECTORIES = {
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    "graphe",
+    "timeline",
+    "progression",
+    "analysesllm",
+}
 
 
 class FolderReportSignals(QObject):
@@ -39,7 +49,7 @@ class FolderReportWorker(QRunnable):
                 for path in self.root.rglob("*")
                 if path.is_file()
                 and path.suffix.lower() in self.extensions
-                and not any(part in IGNORED_DIRECTORIES for part in path.parts)
+                and not any(part.casefold() in IGNORED_DIRECTORIES for part in path.parts)
             )
             self.signals.status.emit(f"Lecture de {len(paths)} fichier(s)…")
             texts = [path.read_text(encoding="utf-8", errors="replace") for path in paths]
@@ -87,7 +97,9 @@ class FolderReportWindow(QMainWindow):
         layout.setSpacing(10)
 
         title = QLabel(f"<h2>Rapport complet — {root.name}</h2>")
+        title.setStyleSheet("color: #f2f2f2;")
         self.status = QLabel("Préparation du rapport…")
+        self.status.setStyleSheet("color: #dddddd;")
         self.status.setWordWrap(True)
         self.panel = IndicatorsPanel()
 

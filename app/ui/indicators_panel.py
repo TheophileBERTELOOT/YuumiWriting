@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -23,6 +24,8 @@ class IndicatorCard(QWidget):
         title = QLabel(f"<b>{indicator.name}</b>")
         value = QLabel(indicator.value)
         detail = QLabel(indicator.detail)
+        title.setWordWrap(True)
+        value.setWordWrap(True)
         detail.setWordWrap(True)
 
         layout.addWidget(title)
@@ -41,6 +44,10 @@ class IndicatorCard(QWidget):
 
         self.setObjectName("indicatorCard")
         self.setProperty("severity", indicator.severity)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
 
 
 class SentenceLengthHistogram(QWidget):
@@ -142,14 +149,27 @@ class IndicatorsPanel(QScrollArea):
     def __init__(self) -> None:
         super().__init__()
         self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.viewport().setStyleSheet("background: #26272b;")
 
         self.container = QWidget()
+        self.container.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         self.layout = QVBoxLayout(self.container)
         self.layout.setContentsMargins(8, 8, 8, 8)
         self.layout.setSpacing(8)
         self.layout.addStretch(1)
 
         self.setWidget(self.container)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # Certains QLabel avec retour à la ligne produisent une largeur idéale
+        # supérieure au panneau. Sans cette contrainte, Qt décale le contenu
+        # hors de la zone visible malgré setWidgetResizable(True).
+        self.container.setFixedWidth(self.viewport().width())
 
     def set_indicators(self, indicators: list[Indicator]) -> None:
         while self.layout.count() > 1:
