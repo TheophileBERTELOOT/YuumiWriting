@@ -82,6 +82,7 @@ class LLMAnalysisService:
             model=self.model,
             input=self.build_prompt(text, definitions),
         )
+        print(response)
         raw = response.output_text.strip()
         if raw.startswith("```"):
             raw = raw.removeprefix("```json").removeprefix("```")

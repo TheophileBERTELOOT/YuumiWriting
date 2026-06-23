@@ -7,20 +7,8 @@ from PySide6.QtWidgets import QLabel, QMainWindow, QVBoxLayout, QWidget
 
 from app.analysis.analyzer_base import Indicator
 from app.analysis.registry import AnalyzerRegistry
+from app.core.text_corpus import iter_text_files
 from app.ui.indicators_panel import IndicatorsPanel
-
-
-IGNORED_DIRECTORIES = {
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "node_modules",
-    "graphe",
-    "timeline",
-    "progression",
-    "analysesllm",
-}
 
 
 class FolderReportSignals(QObject):
@@ -44,13 +32,7 @@ class FolderReportWorker(QRunnable):
 
     def run(self) -> None:
         try:
-            paths = sorted(
-                path
-                for path in self.root.rglob("*")
-                if path.is_file()
-                and path.suffix.lower() in self.extensions
-                and not any(part.casefold() in IGNORED_DIRECTORIES for part in path.parts)
-            )
+            paths = iter_text_files(self.root, self.extensions)
             self.signals.status.emit(f"Lecture de {len(paths)} fichier(s)…")
             texts = [path.read_text(encoding="utf-8", errors="replace") for path in paths]
 

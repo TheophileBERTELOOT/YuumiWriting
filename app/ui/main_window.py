@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QMarginsF, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtGui import QAction, QKeySequence, QPageLayout, QPageSize, QPdfWriter, QTextDocument
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QToolButton,
+    QWidget,
 )
 
 from app.analysis.registry import AnalyzerRegistry
@@ -17,6 +22,7 @@ from app.analysis.analyzer_base import Indicator
 from app.core.document_manager import DocumentManager
 from app.core.progression import ProgressTracker
 from app.core.settings import AppSettings
+from app.core.text_corpus import iter_text_files
 from app.llm.registry import LLMAnalysisRegistry
 from app.llm.storage import LLMAnalysisStorage
 from app.llm.worker import LLMAnalysisWorker
@@ -27,6 +33,9 @@ from app.ui.graph_window import GraphWindow
 from app.ui.indicators_panel import IndicatorsPanel
 from app.ui.timeline_window import TimelineWindow
 from app.ui.progression_window import ProgressionWindow
+
+
+PDF_WORDS_PER_PAGE = 260
 
 
 class NatureAnalysisSignals(QObject):
@@ -224,6 +233,29 @@ class MainWindow(QMainWindow):
         menu_bar.addAction(self.timeline_action)
         self.progression_action = QAction("Progression", self)
         menu_bar.addAction(self.progression_action)
+        self._build_export_pdf_corner(menu_bar)
+
+    def _build_export_pdf_corner(self, menu_bar) -> None:
+        corner = QWidget(self)
+        corner.setObjectName("topBarExportGroup")
+        layout = QHBoxLayout(corner)
+        layout.setContentsMargins(6, 0, 10, 0)
+        layout.setSpacing(8)
+
+        separator = QFrame(corner)
+        separator.setObjectName("topBarExportSeparator")
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+
+        self.export_pdf_button = QToolButton(corner)
+        self.export_pdf_button.setObjectName("exportPdfButton")
+        self.export_pdf_button.setText("PDF")
+        self.export_pdf_button.setToolTip("Combiner les fichiers texte du dossier en PDF")
+        self.export_pdf_button.setAutoRaise(True)
+
+        layout.addWidget(separator)
+        layout.addWidget(self.export_pdf_button)
+        menu_bar.setCornerWidget(corner, Qt.Corner.TopRightCorner)
 
     def _add_group_selector(self, menu, group_name: str) -> None:
         selector = QAction("Tout sélectionner", self)
@@ -272,6 +304,7 @@ class MainWindow(QMainWindow):
         self.graph_action.triggered.connect(self.open_graph)
         self.timeline_action.triggered.connect(self.open_timeline)
         self.progression_action.triggered.connect(self.open_progression)
+        self.export_pdf_button.clicked.connect(self.export_project_pdf)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -297,6 +330,26 @@ class MainWindow(QMainWindow):
                 background: #5b5d66;
                 margin: 5px 7px;
             }
+            QWidget#topBarExportGroup {
+                background: #2d2e33;
+            }
+            QFrame#topBarExportSeparator {
+                color: #5b5d66;
+                background: #5b5d66;
+                margin: 5px 0;
+                max-width: 1px;
+            }
+            QToolButton#exportPdfButton {
+                background: transparent;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                font-weight: 600;
+            }
+            QToolButton#exportPdfButton:hover {
+                background: #44464d;
+                border-radius: 4px;
+            }
             QMenu {
                 background: #2d2e33;
                 color: white;
@@ -310,7 +363,7 @@ class MainWindow(QMainWindow):
             }
             QTextEdit {
                 background: #fbf7ef;
-                color: #1f1a17;
+                color: #000000;
                 padding: 22px;
                 border: none;
                 selection-background-color: #d9c7a3;
@@ -541,6 +594,267 @@ class MainWindow(QMainWindow):
         self.progression_window.show()
         self.progression_window.raise_()
         self.progression_window.activateWindow()
+
+    def export_project_pdf(self) -> None:
+        root = self.file_tree.project_root
+        paths = iter_text_files(root, self.settings.accepted_extensions)
+        if not paths:
+            QMessageBox.information(
+                self,
+                "Export PDF",
+                "Aucun fichier texte compatible trouvé dans ce dossier.",
+            )
+            return
+
+        default_path = root / f"{root.name}.pdf"
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Sauvegarder le PDF",
+            str(default_path),
+            "PDF (*.pdf)",
+        )
+        if not filename:
+            return
+
+        output_path = Path(filename)
+        if output_path.suffix.lower() != ".pdf":
+            output_path = output_path.with_suffix(".pdf")
+
+        try:
+            self._write_project_pdf(root, paths, output_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export PDF impossible", str(exc))
+            return
+
+        self.status_label.setText(
+            f"PDF sauvegardé : {output_path.name} ({len(paths)} fichier"
+            f"{'s' if len(paths) != 1 else ''})"
+        )
+
+    def _write_project_pdf(self, root: Path, paths: list[Path], output_path: Path) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        writer = QPdfWriter(str(output_path))
+        writer.setTitle(f"{root.name} - manuscrit")
+        writer.setCreator("YuumiWriting")
+        writer.setPageSize(QPageSize(QPageSize.PageSizeId.A5))
+        writer.setPageMargins(
+            QMarginsF(6, 7, 6, 7),
+            QPageLayout.Unit.Millimeter,
+        )
+
+        blocks = []
+        for path in paths:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            blocks.extend(self._pdf_blocks_from_text(content))
+
+        pages = self._paginate_pdf_blocks(blocks, PDF_WORDS_PER_PAGE)
+        page_html = "\n".join(
+            self._pdf_page_html(page, index)
+            for index, page in enumerate(pages)
+        )
+
+        document = QTextDocument()
+        document.setDocumentMargin(0)
+        document.setHtml(
+            """
+            <html>
+            <head>
+            <style>
+                body {
+                    color: #15110f;
+                    font-family: Georgia, "DejaVu Serif", "Times New Roman", serif;
+                    font-size: 10.2pt;
+                    line-height: 1.25;
+                    text-align: justify;
+                }
+                h2.chapter {
+                    color: #15110f;
+                    font-size: 16pt;
+                    font-weight: 600;
+                    margin: 18px 0 14px 0;
+                    text-align: center;
+                }
+                h3.subchapter {
+                    color: #2c2520;
+                    font-size: 12pt;
+                    font-style: italic;
+                    font-weight: 400;
+                    margin: 14px 0 10px 0;
+                    text-align: center;
+                }
+                .page {
+                    min-height: 100%;
+                }
+                .page + .page {
+                    page-break-before: always;
+                }
+                .title-page {
+                    text-align: center;
+                }
+                .title-page h1 {
+                    font-size: 22pt;
+                    font-weight: 500;
+                    margin-top: 110px;
+                }
+                p {
+                    margin: 0 0 4px 0;
+                    text-indent: 13px;
+                }
+                p.dialogue {
+                    margin-left: 13px;
+                    text-indent: 0;
+                }
+            </style>
+            </head>
+            <body>
+            """
+            + f'<section class="page title-page"><h1>{html.escape(root.name)}</h1></section>'
+            + page_html
+            + """
+            </body>
+            </html>
+            """
+        )
+        document.print_(writer)
+
+    def _pdf_blocks_from_text(self, content: str) -> list[tuple[str, str]]:
+        blocks: list[tuple[str, str]] = []
+        buffer: list[str] = []
+        index = 0
+        tags = {
+            "rep": "dialogue",
+            "chapter": "chapter",
+            "chaptersubtitle": "subchapter",
+            "subchapter": "subchapter",
+        }
+
+        def flush_buffer() -> None:
+            text = "".join(buffer)
+            buffer.clear()
+            for paragraph in self._split_pdf_paragraphs(text):
+                blocks.append(("paragraph", paragraph))
+
+        while index < len(content):
+            matched = False
+            for tag, kind in tags.items():
+                opening = f"\\{tag}" + "{"
+                if not content.startswith(opening, index):
+                    continue
+                inner, end_index = self._read_braced_text(content, index + len(opening))
+                if inner is None:
+                    continue
+                flush_buffer()
+                clean_inner = " ".join(inner.split())
+                if clean_inner:
+                    blocks.append((kind, clean_inner))
+                index = end_index
+                matched = True
+                break
+            if matched:
+                continue
+            buffer.append(content[index])
+            index += 1
+
+        flush_buffer()
+        return blocks
+
+    def _read_braced_text(self, content: str, start: int) -> tuple[str | None, int]:
+        depth = 1
+        index = start
+        while index < len(content):
+            char = content[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return content[start:index], index + 1
+            elif char == "]" and depth == 1:
+                return content[start:index], index + 1
+            index += 1
+        return None, start
+
+    def _split_pdf_paragraphs(self, text: str) -> list[str]:
+        paragraphs = []
+        current = []
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                if current:
+                    paragraphs.append(" ".join(current))
+                    current = []
+                continue
+            current.append(stripped)
+        if current:
+            paragraphs.append(" ".join(current))
+        return paragraphs
+
+    def _paginate_pdf_blocks(
+        self,
+        blocks: list[tuple[str, str]],
+        words_per_page: int,
+    ) -> list[list[tuple[str, str]]]:
+        pages: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
+        current_words = 0
+
+        def finish_page() -> None:
+            nonlocal current, current_words
+            if current:
+                pages.append(current)
+            current = []
+            current_words = 0
+
+        for kind, text in blocks:
+            if kind == "chapter" and current:
+                finish_page()
+
+            words = text.split()
+            if kind not in {"paragraph", "dialogue"}:
+                current.append((kind, text))
+                continue
+
+            while words:
+                available = words_per_page - current_words
+                if available <= 0:
+                    finish_page()
+                    continue
+                if current_words and len(words) > available:
+                    current.append((kind, " ".join(words[:available])))
+                    words = words[available:]
+                    finish_page()
+                    continue
+                if not current_words and len(words) > words_per_page:
+                    current.append((kind, " ".join(words[:words_per_page])))
+                    words = words[words_per_page:]
+                    finish_page()
+                    continue
+                if current_words + len(words) > words_per_page:
+                    finish_page()
+                    continue
+                current.append((kind, " ".join(words)))
+                current_words += len(words)
+                words = []
+                if current_words >= words_per_page:
+                    finish_page()
+
+        finish_page()
+        return pages or [[]]
+
+    def _pdf_page_html(self, page: list[tuple[str, str]], index: int) -> str:
+        parts = [f'<section class="page" data-page="{index + 1}">']
+        for kind, text in page:
+            escaped = html.escape(text)
+            if kind == "chapter":
+                parts.append(f'<h2 class="chapter">{escaped}</h2>')
+            elif kind == "subchapter":
+                parts.append(f'<h3 class="subchapter">{escaped}</h3>')
+            elif kind == "dialogue":
+                parts.append(f'<p class="dialogue">&mdash; {escaped}</p>')
+            else:
+                parts.append(f"<p>{escaped}</p>")
+        parts.append("</section>")
+        return "\n".join(parts)
 
     def _record_progress(self) -> None:
         try:

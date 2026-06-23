@@ -2,30 +2,33 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QPainter, QPainterPath, QPen, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsPathItem,
-    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QTableView,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -62,6 +65,76 @@ def _fill_combo(combo: QComboBox, values: set[str], current: str = "") -> None:
     combo.setCurrentText(current)
 
 
+class NodePickerCombo(QComboBox):
+    def __init__(self, nodes: list[tuple[str, str, str]], current_id: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._current_node_id = ""
+        self._current_node_name = ""
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+
+        view = QTableView(self)
+        view.setSelectionBehavior(QTableView.SelectionBehavior.SelectItems)
+        view.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        view.setShowGrid(True)
+        view.verticalHeader().hide()
+        view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        view.clicked.connect(self._choose_index)
+        self.setView(view)
+
+        grouped: dict[str, list[tuple[str, str]]] = {}
+        for node_id, name, node_type in nodes:
+            grouped.setdefault(node_type or "Sans type", []).append((name, node_id))
+
+        headers = sorted(grouped, key=str.casefold)
+        rows = max((len(values) for values in grouped.values()), default=0)
+        model = QStandardItemModel(rows, len(headers), self)
+        model.setHorizontalHeaderLabels(headers)
+        for column, header in enumerate(headers):
+            for row, (name, node_id) in enumerate(sorted(grouped[header], key=lambda item: item[0].casefold())):
+                item = QStandardItem(name)
+                item.setData(node_id, Qt.ItemDataRole.UserRole)
+                item.setEditable(False)
+                model.setItem(row, column, item)
+
+        self.setModel(model)
+        self.set_current_id(current_id)
+        if not self._current_node_id and nodes:
+            self.set_current_id(nodes[0][0])
+
+    def _choose_index(self, index) -> None:
+        node_id = index.data(Qt.ItemDataRole.UserRole)
+        if not node_id:
+            return
+        self._current_node_id = str(node_id)
+        self._current_node_name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        self.setCurrentText(self._current_node_name)
+        self.hidePopup()
+
+    def set_current_id(self, node_id: str) -> None:
+        if not node_id:
+            return
+        for row in range(self.model().rowCount()):
+            for column in range(self.model().columnCount()):
+                index = self.model().index(row, column)
+                if index.data(Qt.ItemDataRole.UserRole) == node_id:
+                    self._choose_index(index)
+                    return
+
+    def currentData(self, role: int = Qt.ItemDataRole.UserRole):  # noqa: N802 - Qt API name
+        if role == Qt.ItemDataRole.UserRole:
+            return self._current_node_id
+        return super().currentData(role)
+
+    def showPopup(self) -> None:
+        view = self.view()
+        view.resizeColumnsToContents()
+        width = max(self.width(), view.horizontalHeader().length() + view.verticalScrollBar().sizeHint().width() + 8)
+        view.setMinimumWidth(width)
+        super().showPopup()
+
+
 class NodeDialog(QDialog):
     def __init__(self, types: set[str], name: str = "", node_type: str = "", text: str = "", parent=None) -> None:
         super().__init__(parent)
@@ -92,18 +165,13 @@ class NodeDialog(QDialog):
 
 
 class EdgeDialog(QDialog):
-    def __init__(self, nodes: list[tuple[str, str]], types: set[str], source_id: str = "", target_id: str = "", edge_type: str = "", text: str = "", parent=None) -> None:
+    def __init__(self, nodes: list[tuple[str, str, str]], types: set[str], source_id: str = "", target_id: str = "", edge_type: str = "", text: str = "", parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Arête")
-        self.resize(430, 330)
+        self.resize(520, 360)
         layout = QFormLayout(self)
-        self.source_combo = QComboBox()
-        self.target_combo = QComboBox()
-        for node_id, name in nodes:
-            self.source_combo.addItem(name, node_id)
-            self.target_combo.addItem(name, node_id)
-        self._select_id(self.source_combo, source_id)
-        self._select_id(self.target_combo, target_id)
+        self.source_combo = NodePickerCombo(nodes, source_id)
+        self.target_combo = NodePickerCombo(nodes, target_id)
         self.type_combo = QComboBox()
         _fill_combo(self.type_combo, types, edge_type)
         self.text_edit = QTextEdit(text)
@@ -116,12 +184,6 @@ class EdgeDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
-
-    @staticmethod
-    def _select_id(combo: QComboBox, node_id: str) -> None:
-        index = combo.findData(node_id)
-        if index >= 0:
-            combo.setCurrentIndex(index)
 
     def values(self) -> tuple[str, str, str, str]:
         return (
@@ -140,9 +202,9 @@ class NodeData:
     text: str
 
 
-class NodeItem(QGraphicsRectItem):
+class NodeItem(QGraphicsEllipseItem):
     def __init__(self, data: NodeData, edit_callback: Callable[[str], None]) -> None:
-        super().__init__(-70, -28, 140, 56)
+        super().__init__(-58, -58, 116, 116)
         self.data = data
         self.edit_callback = edit_callback
         self.edges: list[EdgeItem] = []
@@ -161,10 +223,11 @@ class NodeItem(QGraphicsRectItem):
         color = QColor(NODE_COLORS[_stable_index(self.data.type, len(NODE_COLORS))])
         self.setBrush(QBrush(color))
         self.setPen(QPen(QColor("#f1f1f1") if self.isSelected() else color.lighter(125), 2))
-        self.label.setText(self.data.name)
+        metrics = QFontMetricsF(self.label.font())
+        self.label.setText(metrics.elidedText(self.data.name, Qt.TextElideMode.ElideRight, 92))
         bounds = self.label.boundingRect()
         self.label.setPos(-bounds.width() / 2, -bounds.height() / 2)
-        self.setToolTip(f"Type : {self.data.type or 'sans type'}\n{self.data.text}")
+        self.setToolTip(f"{self.data.name}\nType : {self.data.type or 'sans type'}\n{self.data.text}")
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -276,6 +339,7 @@ class GraphWindow(QMainWindow):
             ("Nouvelle arête", self.create_edge),
             ("Modifier", self.edit_selected),
             ("Supprimer", self.delete_selected),
+            ("Réarranger", self.auto_arrange_graph),
             ("Nouveau graphe", self.clear_graph),
             ("Sauvegarder", self.save_graph),
             ("Charger", self.load_graph),
@@ -328,7 +392,7 @@ class GraphWindow(QMainWindow):
         if not self.nodes:
             QMessageBox.information(self, "Arête", "Créez d’abord au moins un nœud.")
             return
-        node_choices = [(item.data.id, item.data.name) for item in self.nodes.values()]
+        node_choices = [(item.data.id, item.data.name, item.data.type) for item in self.nodes.values()]
         selected_nodes = [item for item in self.scene.selectedItems() if isinstance(item, NodeItem)]
         source_id = selected_nodes[0].data.id if selected_nodes else ""
         target_id = selected_nodes[1].data.id if len(selected_nodes) > 1 else ""
@@ -343,7 +407,7 @@ class GraphWindow(QMainWindow):
 
     def edit_edge(self, edge_id: str) -> None:
         item = self.edges[edge_id]
-        choices = [(node.data.id, node.data.name) for node in self.nodes.values()]
+        choices = [(node.data.id, node.data.name, node.data.type) for node in self.nodes.values()]
         dialog = EdgeDialog(choices, self.edge_types(), item.data.source, item.data.target, item.data.type, item.data.text, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -385,6 +449,163 @@ class GraphWindow(QMainWindow):
             node = self.nodes.pop(node_id, None)
             if node is not None:
                 self.scene.removeItem(node)
+
+    def auto_arrange_graph(self) -> None:
+        if not self.nodes:
+            QMessageBox.information(self, "Réarranger", "Ajoutez d'abord des nœuds au graphe.")
+            return
+
+        positions = self._auto_layout_positions()
+        for node_id, position in positions.items():
+            self.nodes[node_id].setPos(position)
+        for edge in self.edges.values():
+            edge.update_path()
+
+        bounds = self.scene.itemsBoundingRect()
+        if bounds.isValid():
+            self.scene.setSceneRect(bounds.adjusted(-260, -220, 260, 220))
+            self.view.fitInView(bounds.adjusted(-140, -120, 140, 120), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def _auto_layout_positions(self) -> dict[str, QPointF]:
+        components = self._graph_components()
+        arranged: dict[str, QPointF] = {}
+        row_x = 0.0
+        row_y = 0.0
+        row_height = 0.0
+        max_row_width = 1800.0
+        component_gap = 260.0
+
+        for component in components:
+            local_positions = self._layout_component(component)
+            min_x, min_y, max_x, max_y = self._position_bounds(local_positions)
+            width = max_x - min_x
+            height = max_y - min_y
+            if row_x and row_x + width > max_row_width:
+                row_x = 0.0
+                row_y += row_height + component_gap
+                row_height = 0.0
+
+            for node_id, position in local_positions.items():
+                arranged[node_id] = QPointF(
+                    position.x() - min_x + row_x,
+                    position.y() - min_y + row_y,
+                )
+            row_x += width + component_gap
+            row_height = max(row_height, height)
+
+        min_x, min_y, max_x, max_y = self._position_bounds(arranged)
+        center = QPointF((min_x + max_x) / 2, (min_y + max_y) / 2)
+        return {node_id: position - center for node_id, position in arranged.items()}
+
+    def _graph_components(self) -> list[list[str]]:
+        adjacency = {node_id: set() for node_id in self.nodes}
+        for edge in self.edges.values():
+            source = edge.data.source
+            target = edge.data.target
+            if source in adjacency and target in adjacency and source != target:
+                adjacency[source].add(target)
+                adjacency[target].add(source)
+
+        components: list[list[str]] = []
+        remaining = set(self.nodes)
+        while remaining:
+            start = min(
+                remaining,
+                key=lambda node_id: (
+                    self.nodes[node_id].data.type.casefold(),
+                    self.nodes[node_id].data.name.casefold(),
+                    node_id,
+                ),
+            )
+            stack = [start]
+            remaining.remove(start)
+            component = []
+            while stack:
+                node_id = stack.pop()
+                component.append(node_id)
+                for neighbor in sorted(adjacency[node_id], reverse=True):
+                    if neighbor in remaining:
+                        remaining.remove(neighbor)
+                        stack.append(neighbor)
+            components.append(
+                sorted(
+                    component,
+                    key=lambda node_id: (
+                        self.nodes[node_id].data.type.casefold(),
+                        self.nodes[node_id].data.name.casefold(),
+                        node_id,
+                    ),
+                )
+            )
+        return sorted(components, key=lambda component: (-len(component), component[0]))
+
+    def _layout_component(self, node_ids: list[str]) -> dict[str, QPointF]:
+        count = len(node_ids)
+        if count == 1:
+            return {node_ids[0]: QPointF(0, 0)}
+
+        width = max(520.0, math.sqrt(count) * 290.0)
+        height = max(360.0, math.sqrt(count) * 220.0)
+        radius = min(width, height) * 0.38
+        positions = {
+            node_id: QPointF(
+                math.cos(2 * math.pi * index / count) * radius,
+                math.sin(2 * math.pi * index / count) * radius,
+            )
+            for index, node_id in enumerate(node_ids)
+        }
+        component_edges = [
+            (edge.data.source, edge.data.target)
+            for edge in self.edges.values()
+            if edge.data.source in positions
+            and edge.data.target in positions
+            and edge.data.source != edge.data.target
+        ]
+
+        area = width * height
+        ideal_distance = max(145.0, math.sqrt(area / count))
+        temperature = max(width, height) * 0.12
+        for iteration in range(180):
+            displacement = {node_id: QPointF(0, 0) for node_id in node_ids}
+
+            for index, first in enumerate(node_ids):
+                for second in node_ids[index + 1 :]:
+                    delta = positions[first] - positions[second]
+                    distance = max(math.hypot(delta.x(), delta.y()), 0.01)
+                    force = ideal_distance * ideal_distance / distance
+                    direction = delta / distance
+                    displacement[first] += direction * force
+                    displacement[second] -= direction * force
+
+            for source, target in component_edges:
+                delta = positions[source] - positions[target]
+                distance = max(math.hypot(delta.x(), delta.y()), 0.01)
+                force = distance * distance / ideal_distance
+                direction = delta / distance
+                displacement[source] -= direction * force
+                displacement[target] += direction * force
+
+            for node_id in node_ids:
+                move = displacement[node_id]
+                length = max(math.hypot(move.x(), move.y()), 0.01)
+                limited = move / length * min(length, temperature)
+                positions[node_id] += limited
+                positions[node_id].setX(min(width / 2, max(-width / 2, positions[node_id].x())))
+                positions[node_id].setY(min(height / 2, max(-height / 2, positions[node_id].y())))
+
+            temperature *= 0.965
+            if temperature < 0.8:
+                break
+
+        return positions
+
+    @staticmethod
+    def _position_bounds(positions: dict[str, QPointF]) -> tuple[float, float, float, float]:
+        if not positions:
+            return 0.0, 0.0, 0.0, 0.0
+        xs = [position.x() for position in positions.values()]
+        ys = [position.y() for position in positions.values()]
+        return min(xs), min(ys), max(xs), max(ys)
 
     def clear_graph(self) -> None:
         if (self.nodes or self.edges) and QMessageBox.question(self, "Nouveau graphe", "Effacer le graphe actuel ?") != QMessageBox.StandardButton.Yes:
