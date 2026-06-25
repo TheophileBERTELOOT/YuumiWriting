@@ -22,13 +22,11 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QTableView,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -68,70 +66,44 @@ def _fill_combo(combo: QComboBox, values: set[str], current: str = "") -> None:
 class NodePickerCombo(QComboBox):
     def __init__(self, nodes: list[tuple[str, str, str]], current_id: str = "", parent=None) -> None:
         super().__init__(parent)
-        self._current_node_id = ""
-        self._current_node_name = ""
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-
-        view = QTableView(self)
-        view.setSelectionBehavior(QTableView.SelectionBehavior.SelectItems)
-        view.setSelectionMode(QTableView.SelectionMode.SingleSelection)
-        view.setShowGrid(True)
-        view.verticalHeader().hide()
-        view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        view.clicked.connect(self._choose_index)
-        self.setView(view)
 
         grouped: dict[str, list[tuple[str, str]]] = {}
         for node_id, name, node_type in nodes:
             grouped.setdefault(node_type or "Sans type", []).append((name, node_id))
 
-        headers = sorted(grouped, key=str.casefold)
-        rows = max((len(values) for values in grouped.values()), default=0)
-        model = QStandardItemModel(rows, len(headers), self)
-        model.setHorizontalHeaderLabels(headers)
-        for column, header in enumerate(headers):
-            for row, (name, node_id) in enumerate(sorted(grouped[header], key=lambda item: item[0].casefold())):
+        model = QStandardItemModel(self)
+        for header in sorted(grouped, key=str.casefold):
+            header_item = QStandardItem(header)
+            header_item.setData(None, Qt.ItemDataRole.UserRole)
+            header_item.setEditable(False)
+            header_item.setEnabled(False)
+            model.appendRow(header_item)
+            for name, node_id in sorted(grouped[header], key=lambda item: item[0].casefold()):
                 item = QStandardItem(name)
                 item.setData(node_id, Qt.ItemDataRole.UserRole)
                 item.setEditable(False)
-                model.setItem(row, column, item)
+                model.appendRow(item)
 
         self.setModel(model)
         self.set_current_id(current_id)
-        if not self._current_node_id and nodes:
+        if self.currentData() is None and nodes:
             self.set_current_id(nodes[0][0])
-
-    def _choose_index(self, index) -> None:
-        node_id = index.data(Qt.ItemDataRole.UserRole)
-        if not node_id:
-            return
-        self._current_node_id = str(node_id)
-        self._current_node_name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
-        self.setCurrentText(self._current_node_name)
-        self.hidePopup()
 
     def set_current_id(self, node_id: str) -> None:
         if not node_id:
             return
         for row in range(self.model().rowCount()):
-            for column in range(self.model().columnCount()):
-                index = self.model().index(row, column)
-                if index.data(Qt.ItemDataRole.UserRole) == node_id:
-                    self._choose_index(index)
-                    return
-
-    def currentData(self, role: int = Qt.ItemDataRole.UserRole):  # noqa: N802 - Qt API name
-        if role == Qt.ItemDataRole.UserRole:
-            return self._current_node_id
-        return super().currentData(role)
+            index = self.model().index(row, 0)
+            if index.data(Qt.ItemDataRole.UserRole) == node_id:
+                self.setCurrentIndex(row)
+                return
 
     def showPopup(self) -> None:
         view = self.view()
-        view.resizeColumnsToContents()
-        width = max(self.width(), view.horizontalHeader().length() + view.verticalScrollBar().sizeHint().width() + 8)
-        view.setMinimumWidth(width)
+        view.setMinimumWidth(self.width())
         super().showPopup()
 
 

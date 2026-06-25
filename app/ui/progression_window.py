@@ -45,25 +45,29 @@ class ProjectionChart(ChartWidget):
         self.records = records
         self.setMinimumHeight(340)
 
-    def _series(self) -> tuple[list[date], list[float]]:
+    def _series(self) -> tuple[list[date], list[float], list[float]]:
         if not self.records:
-            return [], []
+            return [], [], []
         by_day = {date.fromisoformat(record.day): float(record.words_written) for record in self.records}
         first, last = min(by_day), max(max(by_day), date.today())
-        days, values = [], []
+        days, daily_values, cumulative_values = [], [], []
+        cumulative = 0.0
         current = first
         while current <= last:
             days.append(current)
-            values.append(by_day.get(current, 0.0))
+            daily_value = by_day.get(current, 0.0)
+            daily_values.append(daily_value)
+            cumulative += daily_value
+            cumulative_values.append(cumulative)
             current += timedelta(days=1)
-        return days, values
+        return days, cumulative_values, daily_values
 
     @staticmethod
-    def _forecast(values: list[float]) -> tuple[list[float], list[float], list[float]]:
-        sample = values[-min(len(values), 14):]
+    def _forecast(daily_values: list[float], current_total: float) -> tuple[list[float], list[float], list[float]]:
+        sample = daily_values[-min(len(daily_values), 14):]
         count = len(sample)
         if count == 1:
-            predicted = [sample[0]] * 7
+            predicted_daily = [sample[0]] * 7
             uncertainty = max(sample[0] * 0.35, 1.0)
         else:
             mean_x = (count - 1) / 2
@@ -71,24 +75,33 @@ class ProjectionChart(ChartWidget):
             denominator = sum((index - mean_x) ** 2 for index in range(count))
             slope = sum((index - mean_x) * (value - mean_y) for index, value in enumerate(sample)) / denominator if denominator else 0
             intercept = mean_y - slope * mean_x
-            predicted = [max(intercept + slope * (count + step), 0.0) for step in range(7)]
+            predicted_daily = [max(intercept + slope * (count + step), 0.0) for step in range(7)]
             residuals = [value - (intercept + slope * index) for index, value in enumerate(sample)]
             uncertainty = max((sum(value * value for value in residuals) / max(count - 2, 1)) ** 0.5 * 1.96, 1.0)
-        lower = [max(value - uncertainty * math.sqrt(1 + step / 7), 0.0) for step, value in enumerate(predicted, 1)]
-        upper = [value + uncertainty * math.sqrt(1 + step / 7) for step, value in enumerate(predicted, 1)]
-        return predicted, lower, upper
+
+        projected, lower, upper = [], [], []
+        projected_total = lower_total = upper_total = current_total
+        for step, daily_value in enumerate(predicted_daily, 1):
+            spread = uncertainty * math.sqrt(1 + step / 7)
+            projected_total += daily_value
+            lower_total += max(daily_value - spread, 0.0)
+            upper_total += daily_value + spread
+            projected.append(projected_total)
+            lower.append(lower_total)
+            upper.append(upper_total)
+        return projected, lower, upper
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        area = self._frame(painter, "Mots écrits par jour et projection sur 7 jours")
-        days, values = self._series()
-        if not values:
+        area = self._frame(painter, "Mots écrits cumulés par jour et projection sur 7 jours")
+        days, cumulative_values, daily_values = self._series()
+        if not cumulative_values:
             self._empty(painter, area)
             return
-        forecast, lower, upper = self._forecast(values)
-        all_values = values + upper
+        forecast, lower, upper = self._forecast(daily_values, cumulative_values[-1])
+        all_values = cumulative_values + upper
         maximum = max(max(all_values), 10.0) * 1.1
-        total_points = len(values) + 7
+        total_points = len(cumulative_values) + 7
 
         def point(index: int, value: float) -> QPointF:
             x = area.left() + (index / max(total_points - 1, 1)) * area.width()
@@ -104,7 +117,7 @@ class ProjectionChart(ChartWidget):
             painter.setPen(QColor("#bcbcbc"))
             painter.drawText(QRectF(0, y - 8, 52, 16), Qt.AlignmentFlag.AlignRight, str(int(value)))
 
-        boundary = len(values) - 1
+        boundary = len(cumulative_values) - 1
         polygon = QPolygonF()
         for step, value in enumerate(upper, 1):
             polygon.append(point(boundary + step, value))
@@ -114,14 +127,14 @@ class ProjectionChart(ChartWidget):
         painter.setBrush(QColor(124, 166, 217, 55))
         painter.drawPolygon(polygon)
 
-        actual_path = QPainterPath(point(0, values[0]))
-        for index, value in enumerate(values[1:], 1):
+        actual_path = QPainterPath(point(0, cumulative_values[0]))
+        for index, value in enumerate(cumulative_values[1:], 1):
             actual_path.lineTo(point(index, value))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor("#76b37a"), 3))
         painter.drawPath(actual_path)
 
-        projection_path = QPainterPath(point(boundary, values[-1]))
+        projection_path = QPainterPath(point(boundary, cumulative_values[-1]))
         for step, value in enumerate(forecast, 1):
             projection_path.lineTo(point(boundary + step, value))
         painter.setPen(QPen(QColor("#7ca6d9"), 3, Qt.PenStyle.DashLine))
