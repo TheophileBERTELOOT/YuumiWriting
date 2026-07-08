@@ -13,6 +13,7 @@ IGNORED_DIRECTORIES = {
     "timeline",
     "progression",
     "analysesllm",
+    ".yuumi_latex",
 }
 
 

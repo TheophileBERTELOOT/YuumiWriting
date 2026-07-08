@@ -9,11 +9,12 @@ class TextEditor(QTextEdit):
     def __init__(self) -> None:
         super().__init__()
         self.setAcceptRichText(False)
-        self.setPlaceholderText("Écris ton chapitre ici…")
+        self.setPlaceholderText(r"Ecris ton chapitre en LaTeX ici... Ex.: \chapter{Titre}")
         self.setLineWrapMode(QTextEdit.WidgetWidth)
 
-        font = QFont("DejaVu Serif")
-        font.setPointSize(13)
+        font = QFont("Consolas")
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setPointSize(12)
         self.setFont(font)
 
         text_option = QTextOption()

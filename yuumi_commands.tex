@@ -1,0 +1,21 @@
+\usepackage[french]{babel}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage[a5paper,margin=18mm]{geometry}
+
+\setstretch{1.12}
+\setlength{\parindent}{1.2em}
+\setlength{\parskip}{0.15em}
+
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\centering}
+  {}
+  {0pt}
+  {}
+
+\newcommand{\rep}[1]{\par\noindent--- #1\par}
+\newcommand{\scenechange}{\par\bigskip\begin{center}* * *\end{center}\bigskip\par}
+\newcommand{\chaptersubtitle}[1]{\begin{center}\large\itshape #1\end{center}\medskip}

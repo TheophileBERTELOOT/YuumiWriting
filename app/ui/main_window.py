@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QSplitter,
     QToolButton,
@@ -20,6 +21,11 @@ from PySide6.QtWidgets import (
 from app.analysis.registry import AnalyzerRegistry
 from app.analysis.analyzer_base import Indicator
 from app.core.document_manager import DocumentManager
+from app.core.latex_exporter import (
+    LatexExportError,
+    LatexProjectExporter,
+    ensure_project_latex_defaults,
+)
 from app.core.progression import ProgressTracker
 from app.core.settings import AppSettings
 from app.core.text_corpus import iter_text_files
@@ -31,6 +37,7 @@ from app.ui.file_tree import FileTree
 from app.ui.folder_report import FolderReportWindow
 from app.ui.graph_window import GraphWindow
 from app.ui.indicators_panel import IndicatorsPanel
+from app.ui.pdf_preview_window import PdfPreviewWindow
 from app.ui.timeline_window import TimelineWindow
 from app.ui.progression_window import ProgressionWindow
 
@@ -107,8 +114,10 @@ class MainWindow(QMainWindow):
         self.graph_window: GraphWindow | None = None
         self.timeline_window: TimelineWindow | None = None
         self.progression_window: ProgressionWindow | None = None
+        self.pdf_preview_window: PdfPreviewWindow | None = None
 
         self.setWindowTitle("YuumiWriting")
+        self._ensure_project_defaults(project_root)
 
         self.file_tree = FileTree(project_root, self.settings.accepted_extensions)
         self.editor = TextEditor()
@@ -250,8 +259,19 @@ class MainWindow(QMainWindow):
         self.export_pdf_button = QToolButton(corner)
         self.export_pdf_button.setObjectName("exportPdfButton")
         self.export_pdf_button.setText("PDF")
-        self.export_pdf_button.setToolTip("Combiner les fichiers texte du dossier en PDF")
+        self.export_pdf_button.setToolTip("Compiler le dossier en PDF avec LaTeX")
         self.export_pdf_button.setAutoRaise(True)
+        self.export_pdf_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.export_pdf_action = QAction("Exporter en PDF", self)
+        self.preview_pdf_action = QAction("Preview du PDF", self)
+        self.export_pdf_button.setDefaultAction(self.export_pdf_action)
+        self.export_pdf_button.setText("PDF")
+        export_menu = self.export_pdf_button.menu()
+        if export_menu is None:
+            export_menu = QMenu(self.export_pdf_button)
+            self.export_pdf_button.setMenu(export_menu)
+        export_menu.addAction(self.export_pdf_action)
+        export_menu.addAction(self.preview_pdf_action)
 
         layout.addWidget(separator)
         layout.addWidget(self.export_pdf_button)
@@ -304,7 +324,8 @@ class MainWindow(QMainWindow):
         self.graph_action.triggered.connect(self.open_graph)
         self.timeline_action.triggered.connect(self.open_timeline)
         self.progression_action.triggered.connect(self.open_progression)
-        self.export_pdf_button.clicked.connect(self.export_project_pdf)
+        self.export_pdf_action.triggered.connect(self.export_project_pdf)
+        self.preview_pdf_action.triggered.connect(self.preview_project_pdf)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -483,6 +504,7 @@ class MainWindow(QMainWindow):
             return
 
         project_root = Path(folder)
+        self._ensure_project_defaults(project_root)
         self.settings.default_project_root = project_root
         self.file_tree.set_project_root(project_root)
         self.progress_tracker = ProgressTracker(
@@ -496,7 +518,7 @@ class MainWindow(QMainWindow):
         if not self._maybe_discard_changes():
             return
 
-        filter_text = "Textes (*.txt *.md *.tex);;Tous les fichiers (*)"
+        filter_text = "Textes LaTeX (*.tex *.txt *.md);;Tous les fichiers (*)"
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Ouvrir un fichier",
@@ -541,8 +563,8 @@ class MainWindow(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Sauvegarder sous",
-            str(self.settings.default_project_root / "nouveau_chapitre.txt"),
-            "Textes (*.txt *.md *.tex);;Tous les fichiers (*)",
+            str(self.settings.default_project_root / "nouveau_chapitre.tex"),
+            "Textes LaTeX (*.tex *.txt *.md);;Tous les fichiers (*)",
         )
         if not filename:
             return
@@ -597,12 +619,14 @@ class MainWindow(QMainWindow):
 
     def export_project_pdf(self) -> None:
         root = self.file_tree.project_root
-        paths = iter_text_files(root, self.settings.accepted_extensions)
+        exporter = self._project_latex_exporter(root)
+        paths = exporter.source_paths()
         if not paths:
             QMessageBox.information(
                 self,
                 "Export PDF",
-                "Aucun fichier texte compatible trouvé dans ce dossier.",
+                "Aucun fichier numerote trouve. Renomme les chapitres avec un chiffre, "
+                "par exemple chapitre 1.tex, chapitre 2.tex.",
             )
             return
 
@@ -621,15 +645,50 @@ class MainWindow(QMainWindow):
             output_path = output_path.with_suffix(".pdf")
 
         try:
-            self._write_project_pdf(root, paths, output_path)
+            result = exporter.export_pdf(output_path)
+        except LatexExportError as exc:
+            QMessageBox.critical(self, "Export PDF impossible", str(exc))
+            return
         except Exception as exc:
             QMessageBox.critical(self, "Export PDF impossible", str(exc))
             return
 
         self.status_label.setText(
-            f"PDF sauvegardé : {output_path.name} ({len(paths)} fichier"
-            f"{'s' if len(paths) != 1 else ''})"
+            f"PDF sauvegardé : {result.pdf_path.name} ({result.source_count} fichier"
+            f"{'s' if result.source_count != 1 else ''})"
         )
+
+    def preview_project_pdf(self) -> None:
+        root = self.file_tree.project_root
+        preview_path = root / ".yuumi_latex" / "preview.pdf"
+        try:
+            result = self._project_latex_exporter(root).export_pdf(preview_path)
+        except LatexExportError as exc:
+            QMessageBox.critical(self, "Preview PDF impossible", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Preview PDF impossible", str(exc))
+            return
+
+        self.pdf_preview_window = PdfPreviewWindow(result.pdf_path, self.styleSheet())
+        self.pdf_preview_window.show()
+        self.pdf_preview_window.raise_()
+        self.pdf_preview_window.activateWindow()
+        self.status_label.setText(f"Preview PDF : {result.source_count} fichier(s)")
+
+    def _ensure_project_defaults(self, project_root: Path) -> None:
+        try:
+            ensure_project_latex_defaults(project_root)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Initialisation LaTeX",
+                "Le dossier notes ou le fichier de commandes LaTeX n'a pas pu "
+                f"etre cree : {exc}",
+            )
+
+    def _project_latex_exporter(self, root: Path) -> LatexProjectExporter:
+        return LatexProjectExporter(root, self.settings.accepted_extensions)
 
     def _write_project_pdf(self, root: Path, paths: list[Path], output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)

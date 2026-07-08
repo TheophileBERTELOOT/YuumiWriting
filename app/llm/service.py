@@ -25,7 +25,7 @@ class LLMAnalysisService:
         )
         return (
             "Tu es un réviseur littéraire francophone exigeant chargé d'un diagnostic de "
-            "PREMIER JET d'un roman de fantasy. Analyse le texte fourni selon TOUTES les consignes ci-dessous en "
+            "PREMIER JET d'un roman de fantasy  . Analyse le texte fourni selon TOUTES les consignes ci-dessous en "
             "une seule réponse. Ton rôle est d'identifier ce qui mérite une révision, pas de "
             "rassurer l'auteur. Reste juste et fondé sur des preuves : n'invente pas de défaut, "
             "mais ne transforme pas une qualité partielle en éloge général. Considère le texte "
