@@ -295,6 +295,82 @@ class BarChart(ChartWidget):
                 painter.restore()
 
 
+class StackedBarChart(ChartWidget):
+    COLORS = {
+        "added": QColor("#76b37a"),
+        "deleted": QColor("#d46a6a"),
+        "modified": QColor("#7ca6d9"),
+    }
+    LABELS = {
+        "added": "ajoutés",
+        "deleted": "supprimés",
+        "modified": "modifiés",
+    }
+
+    def __init__(
+        self,
+        title: str,
+        entries: list[tuple[str, dict[str, int]]],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.title = title
+        self.entries = entries
+        self.setMinimumHeight(330)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        area = self._frame(painter, self.title)
+        if not self.entries:
+            self._empty(painter, area)
+            return
+
+        keys = ("added", "deleted", "modified")
+        maximum = max(max(sum(values.get(key, 0) for key in keys) for _, values in self.entries), 1)
+        painter.setFont(QFont(painter.font().family(), 8))
+        for step in range(5):
+            value = maximum * step / 4
+            y = area.bottom() - (value / maximum) * area.height()
+            painter.setPen(QPen(QColor("#44464d"), 1))
+            painter.drawLine(QPointF(area.left(), y), QPointF(area.right(), y))
+            painter.setPen(QColor("#bcbcbc"))
+            painter.drawText(QRectF(0, y - 8, 52, 16), Qt.AlignmentFlag.AlignRight, str(int(value)))
+
+        legend_x = area.right() - 235
+        for index, key in enumerate(keys):
+            x = legend_x + index * 82
+            painter.fillRect(QRectF(x, area.top() - 23, 10, 10), self.COLORS[key])
+            painter.setPen(QColor("#d8d8d8"))
+            painter.drawText(QRectF(x + 14, area.top() - 27, 68, 18), Qt.AlignmentFlag.AlignLeft, self.LABELS[key])
+
+        bar_width = area.width() / max(len(self.entries), 1)
+        for index, (label, values) in enumerate(self.entries):
+            total = sum(values.get(key, 0) for key in keys)
+            x = area.left() + index * bar_width + 4
+            width = max(bar_width - 8, 3)
+            bottom = area.bottom()
+            for key in keys:
+                value = values.get(key, 0)
+                if value <= 0:
+                    continue
+                height = area.height() * value / maximum
+                rect = QRectF(x, bottom - height, width, height)
+                painter.fillRect(rect, self.COLORS[key])
+                bottom -= height
+
+            painter.setPen(QColor("#eeeeee"))
+            painter.drawText(
+                QRectF(x, bottom - 20, max(width, 30), 18),
+                Qt.AlignmentFlag.AlignCenter,
+                str(total),
+            )
+            painter.save()
+            painter.translate(x + bar_width / 2, area.bottom() + 8)
+            painter.rotate(-35)
+            painter.drawText(QRectF(-55, 0, 110, 18), Qt.AlignmentFlag.AlignCenter, label)
+            painter.restore()
+
+
 class CollapsibleSection(QWidget):
     def __init__(self, title: str, expanded: bool = True) -> None:
         super().__init__()
@@ -432,6 +508,28 @@ class ProgressionWindow(QMainWindow):
         return weekly, monthly
 
     @staticmethod
+    def _change_aggregates(
+        records: list[ProgressRecord],
+    ) -> tuple[list[tuple[str, dict[str, int]]], list[tuple[str, dict[str, int]]]]:
+        fields = {
+            "added": "words_added",
+            "deleted": "words_deleted",
+            "modified": "words_modified",
+        }
+        weeks: defaultdict[tuple[int, int], dict[str, int]] = defaultdict(lambda: {key: 0 for key in fields})
+        months: defaultdict[tuple[int, int], dict[str, int]] = defaultdict(lambda: {key: 0 for key in fields})
+        for record in records:
+            day = date.fromisoformat(record.day)
+            iso_year, iso_week, _ = day.isocalendar()
+            for key, field_name in fields.items():
+                value = int(getattr(record, field_name, 0))
+                weeks[(iso_year, iso_week)][key] += value
+                months[(day.year, day.month)][key] += value
+        weekly = [(f"S{week:02d} {year}", values) for (year, week), values in sorted(weeks.items())]
+        monthly = [(f"{month:02d}/{year}", values) for (year, month), values in sorted(months.items())]
+        return weekly, monthly
+
+    @staticmethod
     def _placeholder_records() -> list[ProgressRecord]:
         """Produit une démonstration visuelle sans modifier le journal réel."""
         records: list[ProgressRecord] = []
@@ -452,14 +550,20 @@ class ProgressionWindow(QMainWindow):
                 written = 310 + (index * 83) % 620
                 if index % 9 == 0:
                     written = 0
+            words_added = written + ((index * 37) % 160)
+            words_deleted = (index * 19) % 120
+            words_modified = (index * 41) % 280
             total += written
             records.append(
                 ProgressRecord(
                     current.isoformat(),
                     written,
-                    written + ((index * 41) % 280),
+                    words_added + words_deleted + words_modified,
                     total,
                     dict(last_files),
+                    words_added,
+                    words_deleted,
+                    words_modified,
                 )
             )
         records[-1].files = last_files
@@ -479,6 +583,9 @@ class ProgressionWindow(QMainWindow):
         self._clear_layout(self.editing_section.content_layout)
         total_written = sum(record.words_written for record in records)
         total_changed = sum(record.words_changed for record in records)
+        total_added = sum(record.words_added for record in records)
+        total_deleted = sum(record.words_deleted for record in records)
+        total_modified = sum(record.words_modified for record in records)
         current_total = records[-1].total_words if records else 0
         days_active = sum(record.words_written > 0 or record.words_changed > 0 for record in records)
         placeholder_notice = (
@@ -491,16 +598,17 @@ class ProgressionWindow(QMainWindow):
             f"<h2>Progression du roman</h2>{placeholder_notice}"
             f"Total actuel : <b>{current_total:,}</b> mots · "
             f"Ajouts suivis : <b>{total_written:,}</b> mots · "
-            f"Mots remaniés : <b>{total_changed:,}</b> · "
+            f"Mots remaniés : <b>{total_changed:,}</b> "
+            f"(+{total_added:,} / -{total_deleted:,} / {total_modified:,} modifiés) · "
             f"Jours actifs : <b>{days_active}</b>"
         )
         _, monthly = self._aggregates(records, "words_written")
-        changed_weekly, changed_monthly = self._aggregates(records, "words_changed")
+        changed_weekly, changed_monthly = self._change_aggregates(records)
         files = sorted((records[-1].files.items() if records else []), key=lambda item: item[1], reverse=True)
         self.writing_section.content_layout.addWidget(WeeklyProgressChart(records))
         self.writing_section.content_layout.addWidget(BarChart("Mots écrits par mois", monthly[-12:]))
-        self.writing_section.content_layout.addWidget(BarChart("Mots remaniés par semaine", changed_weekly[-16:]))
-        self.writing_section.content_layout.addWidget(BarChart("Mots remaniés par mois", changed_monthly[-12:]))
+        self.writing_section.content_layout.addWidget(StackedBarChart("Mots remaniés par semaine", changed_weekly[-16:]))
+        self.writing_section.content_layout.addWidget(StackedBarChart("Mots remaniés par mois", changed_monthly[-12:]))
         self.writing_section.content_layout.addWidget(BarChart("Nombre de mots par fichier", files, horizontal=True))
         self._populate_editing_section()
 

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.editing_progress import EditingProgressTracker
+from app.core.editing_progress import ChapterEditingState, EditingProgressTracker
 
 
 class EditingWindow(QMainWindow):
@@ -25,6 +25,8 @@ class EditingWindow(QMainWindow):
         super().__init__()
         self.tracker = EditingProgressTracker(project_root, extensions)
         self.rows: dict[str, tuple[QComboBox, QSlider, QLabel]] = {}
+        self.row_states: dict[str, ChapterEditingState] = {}
+        self.stages: list[str] = []
         self.setWindowTitle(f"Édition des chapitres - {project_root.name}")
         self.resize(980, 720)
         self.setStyleSheet(
@@ -128,6 +130,7 @@ class EditingWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self.rows.clear()
+        self.row_states.clear()
 
         try:
             data = self.tracker.load_data()
@@ -137,6 +140,7 @@ class EditingWindow(QMainWindow):
             return
 
         stages = list(data["stages"])
+        self.stages = stages
         headers = ["Chapitre", "Statut", "Completion de l'étape", "", ""]
         for column, header in enumerate(headers):
             label = QLabel(f"<b>{header}</b>")
@@ -171,6 +175,7 @@ class EditingWindow(QMainWindow):
             status_box = QComboBox()
             status_box.addItems(stages)
             status_box.setCurrentText(state.status)
+            self.row_states[state.path] = state
 
             slider_cell = QWidget()
             slider_layout = QVBoxLayout(slider_cell)
@@ -209,18 +214,30 @@ class EditingWindow(QMainWindow):
         self.grid.setRowStretch(len(states) + 1, 1)
 
     def _status_changed(self, path: str, status: str, slider: QSlider) -> None:
-        if status == "Non relu":
-            slider.setValue(0)
-        elif status == "Verrouillé":
-            slider.setValue(100)
-        self._save_row(path)
+        slider.setValue(self._phase_completion(path, status))
 
     def _save_row(self, path: str) -> None:
         row = self.rows.get(path)
         if row is None:
             return
         status_box, slider, _ = row
+        selected_status = status_box.currentText()
+        next_status = self.tracker.next_stage(selected_status, self.stages)
+        next_completion = 100 if next_status == selected_status else 0
         try:
-            self.tracker.update_chapter(path, status_box.currentText(), slider.value())
+            self.tracker.update_chapter(path, next_status, next_completion)
         except Exception as exc:
             QMessageBox.critical(self, "Sauvegarde impossible", str(exc))
+            return
+
+        self.row_states[path] = ChapterEditingState(path, next_status, next_completion)
+        status_box.blockSignals(True)
+        status_box.setCurrentText(next_status)
+        status_box.blockSignals(False)
+        slider.setValue(self._phase_completion(path, next_status))
+
+    def _phase_completion(self, path: str, phase_name: str) -> int:
+        state = self.row_states.get(path)
+        if state is None:
+            return 0
+        return round(self.tracker.phase_completion(state.status, state.completion, phase_name, self.stages))

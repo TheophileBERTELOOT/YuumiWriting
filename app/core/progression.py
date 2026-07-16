@@ -29,15 +29,22 @@ class ProgressRecord:
     words_changed: int
     total_words: int
     files: dict[str, int]
+    words_added: int = 0
+    words_deleted: int = 0
+    words_modified: int = 0
 
     @classmethod
     def from_dict(cls, value: dict) -> "ProgressRecord":
+        words_changed = max(int(value.get("words_changed", 0)), 0)
         return cls(
             str(value["date"]),
             max(int(value.get("words_written", 0)), 0),
-            max(int(value.get("words_changed", 0)), 0),
+            words_changed,
             max(int(value.get("total_words", 0)), 0),
             {str(path): max(int(count), 0) for path, count in value.get("files", {}).items()},
+            max(int(value.get("words_added", 0)), 0),
+            max(int(value.get("words_deleted", 0)), 0),
+            max(int(value.get("words_modified", words_changed)), 0),
         )
 
     def to_dict(self) -> dict:
@@ -45,9 +52,23 @@ class ProgressRecord:
             "date": self.day,
             "words_written": self.words_written,
             "words_changed": self.words_changed,
+            "words_added": self.words_added,
+            "words_deleted": self.words_deleted,
+            "words_modified": self.words_modified,
             "total_words": self.total_words,
             "files": self.files,
         }
+
+
+@dataclass(frozen=True)
+class WordChangeStats:
+    added: int = 0
+    deleted: int = 0
+    modified: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.added + self.deleted + self.modified
 
 
 class ProgressTracker:
@@ -97,16 +118,28 @@ class ProgressTracker:
         previous_counts = records[-1].files if records else counts
         previous_snapshots = self._load_state()
         additions = sum(max(count - previous_counts.get(path, 0), 0) for path, count in counts.items())
-        changed_words = self._changed_words(previous_snapshots, snapshots) if previous_snapshots else 0
+        change_stats = self._changed_words(previous_snapshots, snapshots) if previous_snapshots else WordChangeStats()
 
         if records and records[-1].day == current_day:
             records[-1].words_written += additions
-            records[-1].words_changed += changed_words
+            records[-1].words_changed += change_stats.total
+            records[-1].words_added += change_stats.added
+            records[-1].words_deleted += change_stats.deleted
+            records[-1].words_modified += change_stats.modified
             records[-1].total_words = total
             records[-1].files = counts
             result = records[-1]
         else:
-            result = ProgressRecord(current_day, additions, changed_words, total, counts)
+            result = ProgressRecord(
+                current_day,
+                additions,
+                change_stats.total,
+                total,
+                counts,
+                change_stats.added,
+                change_stats.deleted,
+                change_stats.modified,
+            )
             records.append(result)
 
         content = "\n".join(json.dumps(record.to_dict(), ensure_ascii=False) for record in records) + "\n"
@@ -171,20 +204,32 @@ class ProgressTracker:
         self,
         previous: dict[str, list[str]],
         current: dict[str, list[str]],
-    ) -> int:
-        total = 0
+    ) -> WordChangeStats:
+        added = 0
+        deleted = 0
+        modified = 0
         for path in sorted(set(previous) | set(current)):
             old_words = previous.get(path, [])
             new_words = current.get(path, [])
             if not old_words:
-                total += len(new_words)
+                added += len(new_words)
                 continue
             if not new_words:
-                total += len(old_words)
+                deleted += len(old_words)
                 continue
             matcher = SequenceMatcher(None, old_words, new_words, autojunk=False)
             for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
                 if tag == "equal":
                     continue
-                total += max(old_end - old_start, new_end - new_start)
-        return total
+                old_count = old_end - old_start
+                new_count = new_end - new_start
+                if tag == "insert":
+                    added += new_count
+                elif tag == "delete":
+                    deleted += old_count
+                else:
+                    common = min(old_count, new_count)
+                    modified += common
+                    added += max(new_count - old_count, 0)
+                    deleted += max(old_count - new_count, 0)
+        return WordChangeStats(added, deleted, modified)

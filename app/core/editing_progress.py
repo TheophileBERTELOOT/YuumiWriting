@@ -149,7 +149,7 @@ class EditingProgressTracker:
             if not states:
                 average = 0.0
             else:
-                values = [self._phase_completion_for_state(state, phase_name, stages) for state in states]
+                values = [self.phase_completion(state.status, state.completion, phase_name, stages) for state in states]
                 average = sum(values) / len(values)
             weighted_total += average * weight
             phase_summaries.append(
@@ -216,22 +216,31 @@ class EditingProgressTracker:
             },
         }
 
-    def _phase_completion_for_state(
+    def phase_completion(
         self,
-        state: ChapterEditingState,
+        current_status: str,
+        current_completion: int,
         phase_name: str,
         stages: list[str],
     ) -> float:
-        if phase_name not in stages or state.status not in stages:
+        if phase_name not in stages or current_status not in stages:
             return 0.0
-        current_index = stages.index(state.status)
+        current_index = stages.index(current_status)
         phase_index = stages.index(phase_name)
         locked_index = stages.index("Verrouillé") if "Verrouillé" in stages else len(stages)
         if current_index > phase_index or current_index >= locked_index:
             return 100.0
         if current_index == phase_index:
-            return float(state.completion)
+            return float(self._bounded_completion(current_completion))
         return 0.0
+
+    def next_stage(self, status: str, stages: list[str]) -> str:
+        if status not in stages:
+            return stages[0] if stages else status
+        index = stages.index(status)
+        if index >= len(stages) - 1:
+            return status
+        return stages[index + 1]
 
     def _valid_status(self, status: str, stages: list[str] | None = None) -> str:
         stages = stages or DEFAULT_EDITING_STAGES

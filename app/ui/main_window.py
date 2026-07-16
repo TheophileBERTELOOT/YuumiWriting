@@ -318,6 +318,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.file_tree.file_selected.connect(self.open_path)
+        self.file_tree.file_renamed.connect(self._on_file_renamed)
         self.file_tree.files_reordered.connect(self._on_files_reordered)
         self.editor.textChanged.connect(self._on_text_changed)
 
@@ -637,6 +638,15 @@ class MainWindow(QMainWindow):
         self.editing_window.activateWindow()
 
     def _on_files_reordered(self, path_mapping: dict[Path, Path]) -> None:
+        self._remap_project_paths(path_mapping, "Réordonner les chapitres")
+        self.status_label.setText("Chapitres réordonnés et renumérotés")
+
+    def _on_file_renamed(self, old_path: Path, new_path: Path) -> None:
+        self._remap_project_paths({old_path: new_path}, "Renommer le fichier")
+        self.status_label.setText(f"Renommé : {old_path.name} → {new_path.name}")
+        self.refresh_indicators()
+
+    def _remap_project_paths(self, path_mapping: dict[Path, Path], warning_title: str) -> None:
         resolved_mapping = {old.resolve(): new.resolve() for old, new in path_mapping.items()}
         current_path = self.document_manager.current_path
         if current_path is not None:
@@ -654,10 +664,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(
                 self,
-                "Réordonner les chapitres",
+                warning_title,
                 f"Les fichiers ont été renommés, mais un suivi n'a pas pu être mis à jour : {exc}",
             )
-        self.status_label.setText("Chapitres réordonnés et renumérotés")
 
     def export_project_pdf(self) -> None:
         root = self.file_tree.project_root
