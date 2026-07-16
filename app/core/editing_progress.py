@@ -11,23 +11,23 @@ EDITING_PROGRESS_FILENAME = "edition_progress.json"
 
 DEFAULT_EDITING_STAGES = [
     "Non relu",
-    "Diagnostic effectué",
-    "Révision structurelle",
-    "Révision des scènes",
-    "Révision stylistique",
-    "Correction linguistique",
-    "Vérification de continuité",
+    "Révision cohérence",
+    "Révision worldbulding",
+    "Révision descriptions",
+    "Révision dialogue",
+    "Révision styles",
+    "Révision orthographe",
     "Lecture finale",
     "Verrouillé",
 ]
 
 DEFAULT_PHASE_WEIGHTS = {
-    "Diagnostic effectué": 10,
-    "Révision structurelle": 25,
-    "Révision des scènes": 20,
-    "Révision stylistique": 20,
-    "Correction linguistique": 10,
-    "Vérification de continuité": 10,
+    "Révision cohérence": 20,
+    "Révision worldbulding": 15,
+    "Révision descriptions": 15,
+    "Révision dialogue": 15,
+    "Révision styles": 15,
+    "Révision orthographe": 15,
     "Lecture finale": 5,
 }
 
