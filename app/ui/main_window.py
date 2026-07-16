@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from app.analysis.registry import AnalyzerRegistry
 from app.analysis.analyzer_base import Indicator
 from app.core.document_manager import DocumentManager
+from app.core.editing_progress import EditingProgressTracker
 from app.core.latex_exporter import (
     LatexExportError,
     LatexProjectExporter,
@@ -33,6 +34,7 @@ from app.llm.registry import LLMAnalysisRegistry
 from app.llm.storage import LLMAnalysisStorage
 from app.llm.worker import LLMAnalysisWorker
 from app.ui.editor import TextEditor
+from app.ui.editing_window import EditingWindow
 from app.ui.file_tree import FileTree
 from app.ui.folder_report import FolderReportWindow
 from app.ui.graph_window import GraphWindow
@@ -114,6 +116,7 @@ class MainWindow(QMainWindow):
         self.graph_window: GraphWindow | None = None
         self.timeline_window: TimelineWindow | None = None
         self.progression_window: ProgressionWindow | None = None
+        self.editing_window: EditingWindow | None = None
         self.pdf_preview_window: PdfPreviewWindow | None = None
 
         self.setWindowTitle("YuumiWriting")
@@ -234,6 +237,10 @@ class MainWindow(QMainWindow):
             llm_menu.addAction(action)
 
         self._add_menu_separator(menu_bar)
+        editing_menu = menu_bar.addMenu("Édition")
+        self.editing_action = QAction("Édition des chapitres", self)
+        editing_menu.addAction(self.editing_action)
+        self._add_menu_separator(menu_bar)
         self.folder_report_action = QAction("Rapport du dossier", self)
         menu_bar.addAction(self.folder_report_action)
         self.graph_action = QAction("Graphe", self)
@@ -311,6 +318,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.file_tree.file_selected.connect(self.open_path)
+        self.file_tree.files_reordered.connect(self._on_files_reordered)
         self.editor.textChanged.connect(self._on_text_changed)
 
         self.new_action.triggered.connect(self.new_document)
@@ -324,6 +332,7 @@ class MainWindow(QMainWindow):
         self.graph_action.triggered.connect(self.open_graph)
         self.timeline_action.triggered.connect(self.open_timeline)
         self.progression_action.triggered.connect(self.open_progression)
+        self.editing_action.triggered.connect(self.open_editing)
         self.export_pdf_action.triggered.connect(self.export_project_pdf)
         self.preview_pdf_action.triggered.connect(self.preview_project_pdf)
 
@@ -616,6 +625,39 @@ class MainWindow(QMainWindow):
         self.progression_window.show()
         self.progression_window.raise_()
         self.progression_window.activateWindow()
+
+    def open_editing(self) -> None:
+        self.editing_window = EditingWindow(
+            self.file_tree.project_root,
+            self.settings.accepted_extensions,
+            self.styleSheet(),
+        )
+        self.editing_window.show()
+        self.editing_window.raise_()
+        self.editing_window.activateWindow()
+
+    def _on_files_reordered(self, path_mapping: dict[Path, Path]) -> None:
+        resolved_mapping = {old.resolve(): new.resolve() for old, new in path_mapping.items()}
+        current_path = self.document_manager.current_path
+        if current_path is not None:
+            new_current = resolved_mapping.get(current_path.resolve())
+            if new_current is not None:
+                self.document_manager.current_path = new_current
+                self._update_window_title()
+
+        try:
+            self.progress_tracker.remap_paths(resolved_mapping)
+            EditingProgressTracker(
+                self.file_tree.project_root,
+                self.settings.accepted_extensions,
+            ).remap_chapter_paths(resolved_mapping)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Réordonner les chapitres",
+                f"Les fichiers ont été renommés, mais un suivi n'a pas pu être mis à jour : {exc}",
+            )
+        self.status_label.setText("Chapitres réordonnés et renumérotés")
 
     def export_project_pdf(self) -> None:
         root = self.file_tree.project_root

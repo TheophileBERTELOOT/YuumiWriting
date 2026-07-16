@@ -12,12 +12,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from app.core.editing_progress import EditingProgressTracker
 from app.core.progression import ProgressRecord, ProgressTracker
 
 
@@ -31,7 +34,7 @@ class ChartWidget(QWidget):
         font.setPointSize(11)
         painter.setFont(font)
         painter.drawText(18, 27, title)
-        return QRectF(58, 48, max(self.width() - 82, 10), max(self.height() - 88, 10))
+        return QRectF(68, 48, max(self.width() - 178, 10), max(self.height() - 88, 10))
 
     @staticmethod
     def _empty(painter: QPainter, area: QRectF) -> None:
@@ -150,6 +153,106 @@ class ProjectionChart(ChartWidget):
             painter.drawText(QRectF(x - 38, area.bottom() + 7, 76, 18), Qt.AlignmentFlag.AlignCenter, labels[index].strftime("%d/%m"))
 
 
+class WeeklyProgressChart(ChartWidget):
+    def __init__(self, records: list[ProgressRecord], parent=None) -> None:
+        super().__init__(parent)
+        self.records = records
+        self.setMinimumHeight(380)
+
+    def _series(self) -> list[tuple[str, int, int]]:
+        weeks: defaultdict[tuple[int, int], int] = defaultdict(int)
+        for record in self.records:
+            day = date.fromisoformat(record.day)
+            iso_year, iso_week, _ = day.isocalendar()
+            weeks[(iso_year, iso_week)] += record.words_written
+
+        cumulative = 0
+        entries: list[tuple[str, int, int]] = []
+        for year, week in sorted(weeks):
+            weekly_words = weeks[(year, week)]
+            cumulative += weekly_words
+            entries.append((f"S{week:02d} {year}", weekly_words, cumulative))
+        return entries[-16:]
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        area = self._frame(painter, "Mots écrits par semaine et cumul total")
+        entries = self._series()
+        if not entries:
+            self._empty(painter, area)
+            return
+
+        weekly_max = max(max(value for _, value, _ in entries), 1) * 1.18
+        cumulative_max = max(max(value for _, _, value in entries), 1) * 1.12
+        bar_width = area.width() / max(len(entries), 1)
+
+        painter.setFont(QFont(painter.font().family(), 8))
+        for step in range(5):
+            weekly_value = weekly_max * step / 4
+            y = area.bottom() - (weekly_value / weekly_max) * area.height()
+            painter.setPen(QPen(QColor("#44464d"), 1))
+            painter.drawLine(QPointF(area.left(), y), QPointF(area.right(), y))
+            painter.setPen(QColor("#bcbcbc"))
+            painter.drawText(QRectF(0, y - 8, 52, 16), Qt.AlignmentFlag.AlignRight, str(int(weekly_value)))
+
+            cumulative_value = cumulative_max * step / 4
+            painter.setPen(QColor("#76b37a"))
+            painter.drawText(
+                QRectF(area.right() + 6, y - 8, 74, 16),
+                Qt.AlignmentFlag.AlignLeft,
+                str(int(cumulative_value)),
+            )
+
+        painter.setPen(QColor("#bcbcbc"))
+        painter.drawText(QRectF(4, area.top() - 22, 150, 18), Qt.AlignmentFlag.AlignLeft, "semaine")
+        painter.setPen(QColor("#76b37a"))
+        painter.drawText(QRectF(area.right() - 105, area.top() - 22, 170, 18), Qt.AlignmentFlag.AlignRight, "cumul")
+
+        line_path: QPainterPath | None = None
+        for index, (label, weekly_words, cumulative_words) in enumerate(entries):
+            x = area.left() + index * bar_width
+            bar_height = area.height() * weekly_words / weekly_max
+            rect = QRectF(
+                x + max(bar_width * 0.16, 3),
+                area.bottom() - bar_height,
+                max(bar_width * 0.68, 4),
+                bar_height,
+            )
+            painter.fillRect(rect, QColor("#4f86c6"))
+            painter.setPen(QColor("#eeeeee"))
+            painter.drawText(
+                QRectF(x, rect.top() - 18, bar_width, 16),
+                Qt.AlignmentFlag.AlignCenter,
+                str(weekly_words),
+            )
+
+            point = QPointF(
+                x + bar_width / 2,
+                area.bottom() - (cumulative_words / cumulative_max) * area.height(),
+            )
+            if line_path is None:
+                line_path = QPainterPath(point)
+            else:
+                line_path.lineTo(point)
+
+            painter.save()
+            painter.translate(x + bar_width / 2, area.bottom() + 8)
+            painter.rotate(-35)
+            painter.drawText(QRectF(-55, 0, 110, 18), Qt.AlignmentFlag.AlignCenter, label)
+            painter.restore()
+
+        if line_path is not None:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor("#76b37a"), 3))
+            painter.drawPath(line_path)
+            painter.setBrush(QColor("#f4f1ea"))
+            painter.setPen(QPen(QColor("#76b37a"), 2))
+            for index, (_, _, cumulative_words) in enumerate(entries):
+                x = area.left() + index * bar_width + bar_width / 2
+                y = area.bottom() - (cumulative_words / cumulative_max) * area.height()
+                painter.drawEllipse(QPointF(x, y), 4, 4)
+
+
 class BarChart(ChartWidget):
     def __init__(self, title: str, entries: list[tuple[str, int]], horizontal: bool = False, parent=None) -> None:
         super().__init__(parent)
@@ -192,16 +295,100 @@ class BarChart(ChartWidget):
                 painter.restore()
 
 
+class CollapsibleSection(QWidget):
+    def __init__(self, title: str, expanded: bool = True) -> None:
+        super().__init__()
+        self.setObjectName("collapsibleSection")
+        self.toggle = QToolButton()
+        self.toggle.setObjectName("sectionToggle")
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(expanded)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle.toggled.connect(self._set_expanded)
+
+        self.content = QWidget()
+        self.content.setObjectName("sectionContent")
+        self.content.setVisible(expanded)
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(12, 0, 0, 12)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.toggle)
+        layout.addWidget(self.content)
+
+    def _set_expanded(self, expanded: bool) -> None:
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.content.setVisible(expanded)
+
+
 class ProgressionWindow(QMainWindow):
     def __init__(self, project_root: Path, extensions: tuple[str, ...], stylesheet: str = "") -> None:
         super().__init__()
         self.tracker = ProgressTracker(project_root, extensions)
+        self.editing_tracker = EditingProgressTracker(project_root, extensions)
         self.setWindowTitle(f"Progression — {project_root.name}")
-        self.resize(1100, 900)
-        if stylesheet:
-            self.setStyleSheet(stylesheet)
+        self.resize(1320, 900)
+        self.setMinimumWidth(1180)
+        self.setStyleSheet(
+            (stylesheet or "")
+            + """
+            QMainWindow {
+                background: #202124;
+            }
+            QWidget#progressionRoot,
+            QWidget#chartContainer {
+                background: #202124;
+            }
+            QToolButton#sectionToggle {
+                background: #343741;
+                color: #f4f1ea;
+                border: 1px solid #4a4e5a;
+                border-radius: 6px;
+                padding: 10px 12px;
+                font-size: 15px;
+                font-weight: 800;
+                text-align: left;
+            }
+            QToolButton#sectionToggle:hover {
+                background: #404452;
+                border-color: #7ca6d9;
+            }
+            QWidget#sectionContent {
+                background: #26272d;
+                border-left: 3px solid #7ca6d9;
+                border-radius: 4px;
+            }
+            QPushButton {
+                background: #76b37a;
+                color: #111318;
+                border: none;
+                border-radius: 5px;
+                padding: 7px 14px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background: #8bc58e;
+            }
+            QProgressBar {
+                background: #1f2025;
+                color: #f4f1ea;
+                border: 1px solid #3d414b;
+                border-radius: 6px;
+                text-align: center;
+                font-weight: 700;
+            }
+            QProgressBar::chunk {
+                background: #7ca6d9;
+                border-radius: 5px;
+            }
+            """
+        )
 
         central = QWidget()
+        central.setObjectName("progressionRoot")
         self.layout = QVBoxLayout(central)
         header = QHBoxLayout()
         self.summary = QLabel()
@@ -212,7 +399,13 @@ class ProgressionWindow(QMainWindow):
         header.addWidget(self.summary, 1)
         header.addWidget(refresh)
         self.chart_container = QWidget()
+        self.chart_container.setObjectName("chartContainer")
         self.chart_layout = QVBoxLayout(self.chart_container)
+        self.writing_section = CollapsibleSection("Écriture", True)
+        self.editing_section = CollapsibleSection("Édition", True)
+        self.chart_layout.addWidget(self.writing_section)
+        self.chart_layout.addWidget(self.editing_section)
+        self.chart_layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.chart_container)
@@ -222,14 +415,18 @@ class ProgressionWindow(QMainWindow):
         self.refresh_report()
 
     @staticmethod
-    def _aggregates(records: list[ProgressRecord]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    def _aggregates(
+        records: list[ProgressRecord],
+        field_name: str,
+    ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
         weeks: defaultdict[tuple[int, int], int] = defaultdict(int)
         months: defaultdict[tuple[int, int], int] = defaultdict(int)
         for record in records:
             day = date.fromisoformat(record.day)
             iso_year, iso_week, _ = day.isocalendar()
-            weeks[(iso_year, iso_week)] += record.words_written
-            months[(day.year, day.month)] += record.words_written
+            value = int(getattr(record, field_name, 0))
+            weeks[(iso_year, iso_week)] += value
+            months[(day.year, day.month)] += value
         weekly = [(f"S{week:02d} {year}", value) for (year, week), value in sorted(weeks.items())]
         monthly = [(f"{month:02d}/{year}", value) for (year, month), value in sorted(months.items())]
         return weekly, monthly
@@ -260,6 +457,7 @@ class ProgressionWindow(QMainWindow):
                 ProgressRecord(
                     current.isoformat(),
                     written,
+                    written + ((index * 41) % 280),
                     total,
                     dict(last_files),
                 )
@@ -277,13 +475,12 @@ class ProgressionWindow(QMainWindow):
         showing_placeholders = not records
         if showing_placeholders:
             records = self._placeholder_records()
-        while self.chart_layout.count():
-            item = self.chart_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._clear_layout(self.writing_section.content_layout)
+        self._clear_layout(self.editing_section.content_layout)
         total_written = sum(record.words_written for record in records)
+        total_changed = sum(record.words_changed for record in records)
         current_total = records[-1].total_words if records else 0
-        days_active = sum(record.words_written > 0 for record in records)
+        days_active = sum(record.words_written > 0 or record.words_changed > 0 for record in records)
         placeholder_notice = (
             "<p style='color:#d6aa4c'><b>Données d’exemple</b> — "
             "elles disparaîtront dès la première sauvegarde réelle.</p>"
@@ -294,12 +491,68 @@ class ProgressionWindow(QMainWindow):
             f"<h2>Progression du roman</h2>{placeholder_notice}"
             f"Total actuel : <b>{current_total:,}</b> mots · "
             f"Ajouts suivis : <b>{total_written:,}</b> mots · "
-            f"Jours d’écriture : <b>{days_active}</b>"
+            f"Mots remaniés : <b>{total_changed:,}</b> · "
+            f"Jours actifs : <b>{days_active}</b>"
         )
-        weekly, monthly = self._aggregates(records)
+        _, monthly = self._aggregates(records, "words_written")
+        changed_weekly, changed_monthly = self._aggregates(records, "words_changed")
         files = sorted((records[-1].files.items() if records else []), key=lambda item: item[1], reverse=True)
-        self.chart_layout.addWidget(ProjectionChart(records))
-        self.chart_layout.addWidget(BarChart("Mots écrits par semaine", weekly[-16:]))
-        self.chart_layout.addWidget(BarChart("Mots écrits par mois", monthly[-12:]))
-        self.chart_layout.addWidget(BarChart("Nombre de mots par fichier", files, horizontal=True))
-        self.chart_layout.addStretch(1)
+        self.writing_section.content_layout.addWidget(WeeklyProgressChart(records))
+        self.writing_section.content_layout.addWidget(BarChart("Mots écrits par mois", monthly[-12:]))
+        self.writing_section.content_layout.addWidget(BarChart("Mots remaniés par semaine", changed_weekly[-16:]))
+        self.writing_section.content_layout.addWidget(BarChart("Mots remaniés par mois", changed_monthly[-12:]))
+        self.writing_section.content_layout.addWidget(BarChart("Nombre de mots par fichier", files, horizontal=True))
+        self._populate_editing_section()
+
+    def _populate_editing_section(self) -> None:
+        try:
+            summary = self.editing_tracker.summary()
+        except Exception as exc:
+            QMessageBox.critical(self, "Suivi d'édition invalide", str(exc))
+            return
+
+        if summary.chapter_count == 0:
+            label = QLabel("Aucun chapitre numéroté trouvé pour le suivi d'édition.")
+            label.setStyleSheet("color: #d6aa4c;")
+            self.editing_section.content_layout.addWidget(label)
+            return
+
+        overview = QLabel(
+            f"<h3>Complétion de l'édition complète du roman : "
+            f"{summary.overall_completion:.0f}%</h3>"
+            f"<p>{summary.chapter_count} chapitre(s) suivis.</p>"
+        )
+        overview.setStyleSheet("color: #eeeeee;")
+        self.editing_section.content_layout.addWidget(overview)
+        self.editing_section.content_layout.addWidget(self._progress_bar(summary.overall_completion))
+
+        for phase in summary.phase_summaries:
+            label = QLabel(
+                f"{phase.name} - {phase.average_completion:.0f}% "
+                f"(pondération {phase.weight}%)"
+            )
+            label.setStyleSheet("color: #eeeeee;")
+            self.editing_section.content_layout.addWidget(label)
+            self.editing_section.content_layout.addWidget(self._progress_bar(phase.average_completion))
+
+        status_entries = [(name, count) for name, count in summary.status_counts.items() if count]
+        self.editing_section.content_layout.addWidget(
+            BarChart("Chapitres par statut d'édition", status_entries, horizontal=True)
+        )
+
+    def _progress_bar(self, value: float) -> QProgressBar:
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(round(value))
+        bar.setTextVisible(True)
+        bar.setFormat("%p%")
+        bar.setMinimumHeight(22)
+        return bar
+
+    def _clear_layout(self, layout: QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
