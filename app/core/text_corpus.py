@@ -15,17 +15,33 @@ IGNORED_DIRECTORIES = {
     "analysesllm",
     ".yuumi_latex",
 }
+TEXTS_DIRNAME = "Textes"
+
+
+def text_corpus_root(root: Path) -> Path:
+    return root.resolve() / TEXTS_DIRNAME
+
+
+def is_in_text_corpus(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(text_corpus_root(root))
+    except ValueError:
+        return False
+    return True
 
 
 def iter_text_files(root: Path, extensions: tuple[str, ...]) -> list[Path]:
     resolved_root = root.resolve()
+    texts_root = text_corpus_root(resolved_root)
+    if not texts_root.exists():
+        return []
     return sorted(
         path
-        for path in resolved_root.rglob("*")
+        for path in texts_root.rglob("*")
         if path.is_file()
         and path.suffix.lower() in extensions
         and not any(
             part.casefold() in IGNORED_DIRECTORIES
-            for part in path.relative_to(resolved_root).parts[:-1]
+            for part in path.relative_to(texts_root).parts[:-1]
         )
     )

@@ -29,7 +29,7 @@ from app.core.latex_exporter import (
 )
 from app.core.progression import ProgressTracker
 from app.core.settings import AppSettings
-from app.core.text_corpus import iter_text_files
+from app.core.text_corpus import TEXTS_DIRNAME
 from app.llm.registry import LLMAnalysisRegistry
 from app.llm.storage import LLMAnalysisStorage
 from app.llm.worker import LLMAnalysisWorker
@@ -238,6 +238,10 @@ class MainWindow(QMainWindow):
 
         self._add_menu_separator(menu_bar)
         editing_menu = menu_bar.addMenu("Édition")
+        self.find_replace_action = QAction("Rechercher et remplacer...", self)
+        self.find_replace_action.setShortcut(QKeySequence.Find)
+        editing_menu.addAction(self.find_replace_action)
+        editing_menu.addSeparator()
         self.editing_action = QAction("Édition des chapitres", self)
         editing_menu.addAction(self.editing_action)
         self._add_menu_separator(menu_bar)
@@ -328,6 +332,7 @@ class MainWindow(QMainWindow):
         self.save_action.triggered.connect(self.save_document)
         self.save_as_action.triggered.connect(self.save_as_dialog)
         self.quit_action.triggered.connect(self.close)
+        self.find_replace_action.triggered.connect(self.editor.open_find_replace)
         self.analyze_action.triggered.connect(self.refresh_indicators)
         self.folder_report_action.triggered.connect(self.open_folder_report)
         self.graph_action.triggered.connect(self.open_graph)
@@ -573,7 +578,7 @@ class MainWindow(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Sauvegarder sous",
-            str(self.settings.default_project_root / "nouveau_chapitre.tex"),
+            str(self.settings.default_project_root / TEXTS_DIRNAME / "nouveau_chapitre.tex"),
             "Textes LaTeX (*.tex *.txt *.md);;Tous les fichiers (*)",
         )
         if not filename:
@@ -676,7 +681,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Export PDF",
-                "Aucun fichier numerote trouve. Renomme les chapitres avec un chiffre, "
+                f"Aucun fichier numerote trouve dans le dossier {TEXTS_DIRNAME}. Renomme les chapitres avec un chiffre, "
                 "par exemple chapitre 1.tex, chapitre 2.tex.",
             )
             return

@@ -6,12 +6,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.text_corpus import iter_text_files
+from app.core.text_corpus import TEXTS_DIRNAME, iter_text_files
 
 
 COMMANDS_FILENAME = "yuumi_commands.tex"
 BUILD_DIRNAME = ".yuumi_latex"
 IGNORED_LATEX_DIRECTORIES = {BUILD_DIRNAME.casefold(), "notes"}
+YUUMI_INLINE_COMMANDS = ("rep", "scenechange", "chaptersubtitle")
 
 
 DEFAULT_COMMANDS = r"""\usepackage[french]{babel}
@@ -20,11 +21,21 @@ DEFAULT_COMMANDS = r"""\usepackage[french]{babel}
 \usepackage{microtype}
 \usepackage{setspace}
 \usepackage{titlesec}
-\usepackage[a5paper,margin=18mm]{geometry}
+\usepackage[
+  paperwidth=5.06in,
+  paperheight=7.81in,
+  inner=16mm,
+  outer=12mm,
+  top=14mm,
+  bottom=16mm
+]{geometry}
 
-\setstretch{1.12}
-\setlength{\parindent}{1.2em}
-\setlength{\parskip}{0.15em}
+% YuumiWriting pocket layout
+\setstretch{1.04}
+\setlength{\parindent}{1.15em}
+\setlength{\parskip}{0pt}
+\raggedbottom
+\pagestyle{plain}
 
 \titleformat{\chapter}[display]
   {\normalfont\huge\bfseries\centering}
@@ -35,6 +46,92 @@ DEFAULT_COMMANDS = r"""\usepackage[french]{babel}
 \newcommand{\rep}[1]{\par\noindent--- #1\par}
 \newcommand{\scenechange}{\par\bigskip\begin{center}* * *\end{center}\bigskip\par}
 \newcommand{\chaptersubtitle}[1]{\begin{center}\large\itshape #1\end{center}\medskip}
+"""
+
+POCKET_LAYOUT_MARKER = "% YuumiWriting pocket layout"
+POCKET_LAYOUT_COMMANDS = r"""
+% YuumiWriting pocket layout
+\geometry{
+  paperwidth=5.06in,
+  paperheight=7.81in,
+  inner=16mm,
+  outer=12mm,
+  top=14mm,
+  bottom=16mm
+}
+\setstretch{1.04}
+\setlength{\parindent}{1.15em}
+\setlength{\parskip}{0pt}
+\raggedbottom
+\pagestyle{plain}
+"""
+
+UNICODE_COMMANDS_MARKER = "% YuumiWriting Unicode compatibility"
+UNICODE_DECLARE_FALLBACK = r"\providecommand{\DeclareUnicodeCharacter}[2]{}"
+UNICODE_COMMANDS = r"""
+% YuumiWriting Unicode compatibility
+\providecommand{\DeclareUnicodeCharacter}[2]{}
+\DeclareUnicodeCharacter{00A0}{~}
+\DeclareUnicodeCharacter{202F}{\,}
+\DeclareUnicodeCharacter{2018}{'}
+\DeclareUnicodeCharacter{2019}{'}
+\DeclareUnicodeCharacter{201C}{``}
+\DeclareUnicodeCharacter{201D}{''}
+\DeclareUnicodeCharacter{2013}{--}
+\DeclareUnicodeCharacter{2014}{---}
+\DeclareUnicodeCharacter{2026}{\ldots}
+"""
+
+FRONTMATTER_COMMANDS_MARKER = "% YuumiWriting front matter commands"
+FRONTMATTER_COMMANDS = r"""
+% YuumiWriting front matter commands
+\newcommand{\YuumiRomanTitle}{Titre du roman}
+\newcommand{\YuumiRomanSubtitle}{}
+\newcommand{\YuumiRomanAuthor}{}
+\newcommand{\YuumiRomanDedication}{}
+\newcommand{\YuumiRomanQuote}{}
+
+\newcommand{\romantitle}[1]{\gdef\YuumiRomanTitle{#1}}
+\newcommand{\romansubtitle}[1]{\gdef\YuumiRomanSubtitle{#1}}
+\newcommand{\romanauthor}[1]{\gdef\YuumiRomanAuthor{#1}}
+\newcommand{\romandedication}[1]{\gdef\YuumiRomanDedication{#1}}
+\newcommand{\romanquote}[1]{\gdef\YuumiRomanQuote{#1}}
+
+% A personnaliser pour le roman.
+\romantitle{Titre du roman}
+\romansubtitle{}
+\romanauthor{}
+\romandedication{}
+\romanquote{}
+
+\newcommand{\makeyuumititlepage}{%
+  \begin{titlepage}
+    \centering
+    \thispagestyle{empty}
+    \vspace*{0.18\textheight}
+    {\Huge\bfseries \YuumiRomanTitle\par}
+    \vspace{1.2em}
+    {\Large\itshape \YuumiRomanSubtitle\par}
+    \vfill
+    {\large \YuumiRomanAuthor\par}
+    \vspace*{0.12\textheight}
+  \end{titlepage}
+}
+
+\newcommand{\makeyuumidedicationquotepage}{%
+  \cleardoublepage
+  \thispagestyle{empty}
+  \vspace*{0.2\textheight}
+  \begin{center}
+    {\itshape \YuumiRomanDedication\par}
+    \vspace{3em}
+    \begin{minipage}{0.72\textwidth}
+      \centering
+      {\itshape \YuumiRomanQuote\par}
+    \end{minipage}
+  \end{center}
+  \cleardoublepage
+}
 """
 
 
@@ -52,12 +149,35 @@ class LatexExportError(RuntimeError):
 
 def ensure_project_latex_defaults(project_root: Path) -> Path:
     project_root = project_root.resolve()
+    texts_dir = project_root / TEXTS_DIRNAME
+    texts_dir.mkdir(parents=True, exist_ok=True)
     notes_dir = project_root / "notes"
     notes_dir.mkdir(parents=True, exist_ok=True)
 
     commands_path = project_root / COMMANDS_FILENAME
     if not commands_path.exists():
-        commands_path.write_text(DEFAULT_COMMANDS, encoding="utf-8")
+        commands_path.write_text(DEFAULT_COMMANDS + UNICODE_COMMANDS + FRONTMATTER_COMMANDS, encoding="utf-8")
+    else:
+        content = commands_path.read_text(encoding="utf-8")
+        changed = False
+        if POCKET_LAYOUT_MARKER not in content:
+            content = content.rstrip() + "\n" + POCKET_LAYOUT_COMMANDS
+            changed = True
+        if UNICODE_COMMANDS_MARKER not in content:
+            content = content.rstrip() + "\n" + UNICODE_COMMANDS
+            changed = True
+        elif UNICODE_DECLARE_FALLBACK not in content:
+            content = content.replace(
+                UNICODE_COMMANDS_MARKER,
+                f"{UNICODE_COMMANDS_MARKER}\n{UNICODE_DECLARE_FALLBACK}",
+                1,
+            )
+            changed = True
+        if FRONTMATTER_COMMANDS_MARKER not in content:
+            content = content.rstrip() + "\n" + FRONTMATTER_COMMANDS
+            changed = True
+        if changed:
+            commands_path.write_text(content, encoding="utf-8")
     return commands_path
 
 
@@ -76,7 +196,7 @@ class LatexProjectExporter:
         source_paths = self.source_paths()
         if not source_paths:
             raise LatexExportError(
-                "Aucun fichier numerote trouve pour la compilation PDF. "
+                f"Aucun fichier numerote trouve dans le dossier {TEXTS_DIRNAME} pour la compilation PDF. "
                 "Renomme les chapitres avec un chiffre, par exemple chapitre 1.tex, chapitre 2.tex."
             )
 
@@ -136,13 +256,14 @@ class LatexProjectExporter:
         parts = [
             r"\documentclass[11pt,openany]{book}",
             rf"\input{{{self._tex_path(commands_path)}}}",
-            rf"\title{{{self._escape_text(self.project_root.name)}}}",
-            r"\author{}",
-            r"\date{}",
             r"\begin{document}",
-            r"\maketitle",
+            r"\frontmatter",
+            r"\makeyuumititlepage",
+            r"\makeyuumidedicationquotepage",
             r"\tableofcontents",
             r"\clearpage",
+            r"\mainmatter",
+            r"\pagestyle{plain}",
         ]
         for path in source_paths:
             relative_name = path.relative_to(self.project_root).as_posix()
@@ -150,11 +271,19 @@ class LatexProjectExporter:
                 [
                     "",
                     rf"% YuumiWriting source: {relative_name}",
-                    path.read_text(encoding="utf-8", errors="replace"),
+                    self._source_text(path),
                 ]
             )
         parts.append(r"\end{document}")
         return "\n".join(parts) + "\n"
+
+    def _source_text(self, path: Path) -> str:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        return self._normalize_yuumi_commands(content)
+
+    def _normalize_yuumi_commands(self, content: str) -> str:
+        command_pattern = "|".join(re.escape(command) for command in YUUMI_INLINE_COMMANDS)
+        return re.sub(rf"(^|[^\S\r\n])\\\\(?=({command_pattern})\b)", r"\1\\", content)
 
     def _run_compiler(self, compiler: str, master_tex_path: Path, build_dir: Path) -> None:
         if Path(compiler).name.lower().startswith("latexmk"):

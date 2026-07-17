@@ -7,18 +7,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from app.core.text_corpus import is_in_text_corpus, iter_text_files
 
-IGNORED_DIRECTORIES = {
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "node_modules",
-    "graphe",
-    "timeline",
-    "progression",
-    "analysesllm",
-}
 WORD_RE = re.compile(r"[^\W_]+(?:[’'-][^\W_]+)*|\d+", re.UNICODE)
 
 
@@ -81,15 +71,10 @@ class ProgressTracker:
 
     def _file_snapshots(self) -> dict[str, list[str]]:
         snapshots: dict[str, list[str]] = {}
-        for path in sorted(self.project_root.rglob("*")):
-            if (
-                path.is_file()
-                and path.suffix.lower() in self.extensions
-                and not any(part.casefold() in IGNORED_DIRECTORIES for part in path.parts)
-            ):
-                relative = path.relative_to(self.project_root).as_posix()
-                content = path.read_text(encoding="utf-8", errors="replace")
-                snapshots[relative] = WORD_RE.findall(content)
+        for path in iter_text_files(self.project_root, self.extensions):
+            relative = path.relative_to(self.project_root).as_posix()
+            content = path.read_text(encoding="utf-8", errors="replace")
+            snapshots[relative] = WORD_RE.findall(content)
         return snapshots
 
     def _file_counts(self, snapshots: dict[str, list[str]]) -> dict[str, int]:
@@ -103,7 +88,7 @@ class ProgressTracker:
             if not line.strip():
                 continue
             try:
-                records.append(ProgressRecord.from_dict(json.loads(line)))
+                records.append(self._normalized_record(ProgressRecord.from_dict(json.loads(line))))
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise ValueError(f"Ligne {line_number} invalide dans {self.log_path.name}.") from exc
         return sorted(records, key=lambda record: record.day)
@@ -192,6 +177,7 @@ class ProgressTracker:
             str(path): [str(word) for word in words]
             for path, words in files.items()
             if isinstance(words, list)
+            and is_in_text_corpus(self.project_root / str(path), self.project_root)
         }
 
     def _save_state(self, snapshots: dict[str, list[str]]) -> None:
@@ -199,6 +185,15 @@ class ProgressTracker:
             json.dumps({"version": 1, "files": snapshots}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def _normalized_record(self, record: ProgressRecord) -> ProgressRecord:
+        record.files = {
+            path: count
+            for path, count in record.files.items()
+            if is_in_text_corpus(self.project_root / path, self.project_root)
+        }
+        record.total_words = sum(record.files.values())
+        return record
 
     def _changed_words(
         self,

@@ -12,8 +12,6 @@ EDITING_PROGRESS_FILENAME = "edition_progress.json"
 DEFAULT_EDITING_STAGES = [
     "Non relu",
     "Révision cohérence",
-    "Révision worldbulding",
-    "Révision descriptions",
     "Révision dialogue",
     "Révision styles",
     "Révision orthographe",
@@ -22,12 +20,10 @@ DEFAULT_EDITING_STAGES = [
 ]
 
 DEFAULT_PHASE_WEIGHTS = {
-    "Révision cohérence": 20,
-    "Révision worldbulding": 15,
-    "Révision descriptions": 15,
-    "Révision dialogue": 15,
-    "Révision styles": 15,
-    "Révision orthographe": 15,
+    "Révision cohérence": 30,
+    "Révision dialogue": 10,
+    "Révision styles": 45,
+    "Révision orthographe": 10,
     "Lecture finale": 5,
 }
 

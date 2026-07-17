@@ -10,6 +10,21 @@
 \setlength{\parindent}{1.2em}
 \setlength{\parskip}{0.15em}
 
+% YuumiWriting pocket layout
+\geometry{
+  paperwidth=5.06in,
+  paperheight=7.81in,
+  inner=16mm,
+  outer=12mm,
+  top=14mm,
+  bottom=16mm
+}
+\setstretch{1.04}
+\setlength{\parindent}{1.15em}
+\setlength{\parskip}{0pt}
+\raggedbottom
+\pagestyle{plain}
+
 \titleformat{\chapter}[display]
   {\normalfont\huge\bfseries\centering}
   {}
@@ -19,3 +34,64 @@
 \newcommand{\rep}[1]{\par\noindent--- #1\par}
 \newcommand{\scenechange}{\par\bigskip\begin{center}* * *\end{center}\bigskip\par}
 \newcommand{\chaptersubtitle}[1]{\begin{center}\large\itshape #1\end{center}\medskip}
+
+% YuumiWriting Unicode compatibility
+\providecommand{\DeclareUnicodeCharacter}[2]{}
+\DeclareUnicodeCharacter{00A0}{~}
+\DeclareUnicodeCharacter{202F}{\,}
+\DeclareUnicodeCharacter{2018}{'}
+\DeclareUnicodeCharacter{2019}{'}
+\DeclareUnicodeCharacter{201C}{``}
+\DeclareUnicodeCharacter{201D}{''}
+\DeclareUnicodeCharacter{2013}{--}
+\DeclareUnicodeCharacter{2014}{---}
+\DeclareUnicodeCharacter{2026}{\ldots}
+
+% YuumiWriting front matter commands
+\newcommand{\YuumiRomanTitle}{Titre du roman}
+\newcommand{\YuumiRomanSubtitle}{}
+\newcommand{\YuumiRomanAuthor}{}
+\newcommand{\YuumiRomanDedication}{}
+\newcommand{\YuumiRomanQuote}{}
+
+\newcommand{\romantitle}[1]{\gdef\YuumiRomanTitle{#1}}
+\newcommand{\romansubtitle}[1]{\gdef\YuumiRomanSubtitle{#1}}
+\newcommand{\romanauthor}[1]{\gdef\YuumiRomanAuthor{#1}}
+\newcommand{\romandedication}[1]{\gdef\YuumiRomanDedication{#1}}
+\newcommand{\romanquote}[1]{\gdef\YuumiRomanQuote{#1}}
+
+% A personnaliser pour le roman.
+\romantitle{Titre du roman}
+\romansubtitle{}
+\romanauthor{}
+\romandedication{}
+\romanquote{}
+
+\newcommand{\makeyuumititlepage}{%
+  \begin{titlepage}
+    \centering
+    \thispagestyle{empty}
+    \vspace*{0.18\textheight}
+    {\Huge\bfseries \YuumiRomanTitle\par}
+    \vspace{1.2em}
+    {\Large\itshape \YuumiRomanSubtitle\par}
+    \vfill
+    {\large \YuumiRomanAuthor\par}
+    \vspace*{0.12\textheight}
+  \end{titlepage}
+}
+
+\newcommand{\makeyuumidedicationquotepage}{%
+  \cleardoublepage
+  \thispagestyle{empty}
+  \vspace*{0.2\textheight}
+  \begin{center}
+    {\itshape \YuumiRomanDedication\par}
+    \vspace{3em}
+    \begin{minipage}{0.72\textwidth}
+      \centering
+      {\itshape \YuumiRomanQuote\par}
+    \end{minipage}
+  \end{center}
+  \cleardoublepage
+}
