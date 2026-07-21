@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from app.analysis.registry import AnalyzerRegistry
 from app.analysis.analyzer_base import Indicator
 from app.core.document_manager import DocumentManager
+from app.core.docx_exporter import DocxExportError, DocxProjectExporter
 from app.core.editing_progress import EditingProgressTracker
 from app.core.latex_exporter import (
     LatexExportError,
@@ -79,6 +80,24 @@ class NatureAnalysisWorker(QRunnable):
         self.signals.finished.emit(self.generation, self.text, indicators)
 
 
+class SynonymSearchSignals(QObject):
+    finished = Signal(str, object, bool, str)
+
+
+class SynonymSearchWorker(QRunnable):
+    def __init__(self, word: str, masked_context: str) -> None:
+        super().__init__()
+        self.word = word
+        self.masked_context = masked_context
+        self.signals = SynonymSearchSignals()
+
+    def run(self) -> None:
+        from app.utils.synonyms import find_api_synonyms
+
+        synonyms, error_message = find_api_synonyms(self.word)
+        self.signals.finished.emit(self.word, synonyms, True, error_message)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, project_root: Path) -> None:
         super().__init__()
@@ -107,6 +126,9 @@ class MainWindow(QMainWindow):
         self._nature_worker_running = False
         self._pending_nature_request: tuple[int, str] | None = None
         self._nature_cache: tuple[str, list[Indicator]] | None = None
+        self._synonym_worker: SynonymSearchWorker | None = None
+        self._synonym_indicator: Indicator | None = None
+        self._synonym_word = ""
         self._llm_worker_running = False
         self._active_llm_worker: LLMAnalysisWorker | None = None
         self._active_llm_source_path: Path | None = None
@@ -241,6 +263,9 @@ class MainWindow(QMainWindow):
         self.find_replace_action = QAction("Rechercher et remplacer...", self)
         self.find_replace_action.setShortcut(QKeySequence.Find)
         editing_menu.addAction(self.find_replace_action)
+        self.find_synonyms_action = QAction("Trouver synonyme", self)
+        self.find_synonyms_action.setShortcut("Ctrl+L")
+        editing_menu.addAction(self.find_synonyms_action)
         editing_menu.addSeparator()
         self.editing_action = QAction("Édition des chapitres", self)
         editing_menu.addAction(self.editing_action)
@@ -269,19 +294,21 @@ class MainWindow(QMainWindow):
 
         self.export_pdf_button = QToolButton(corner)
         self.export_pdf_button.setObjectName("exportPdfButton")
-        self.export_pdf_button.setText("PDF")
-        self.export_pdf_button.setToolTip("Compiler le dossier en PDF avec LaTeX")
+        self.export_pdf_button.setText("Exporter")
+        self.export_pdf_button.setToolTip("Exporter le manuscrit en PDF ou Word")
         self.export_pdf_button.setAutoRaise(True)
         self.export_pdf_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.export_pdf_action = QAction("Exporter en PDF", self)
+        self.export_docx_action = QAction("Exporter en Word (.docx)", self)
         self.preview_pdf_action = QAction("Preview du PDF", self)
         self.export_pdf_button.setDefaultAction(self.export_pdf_action)
-        self.export_pdf_button.setText("PDF")
+        self.export_pdf_button.setText("Exporter")
         export_menu = self.export_pdf_button.menu()
         if export_menu is None:
             export_menu = QMenu(self.export_pdf_button)
             self.export_pdf_button.setMenu(export_menu)
         export_menu.addAction(self.export_pdf_action)
+        export_menu.addAction(self.export_docx_action)
         export_menu.addAction(self.preview_pdf_action)
 
         layout.addWidget(separator)
@@ -333,6 +360,7 @@ class MainWindow(QMainWindow):
         self.save_as_action.triggered.connect(self.save_as_dialog)
         self.quit_action.triggered.connect(self.close)
         self.find_replace_action.triggered.connect(self.editor.open_find_replace)
+        self.find_synonyms_action.triggered.connect(self.find_selected_word_synonyms)
         self.analyze_action.triggered.connect(self.refresh_indicators)
         self.folder_report_action.triggered.connect(self.open_folder_report)
         self.graph_action.triggered.connect(self.open_graph)
@@ -340,6 +368,7 @@ class MainWindow(QMainWindow):
         self.progression_action.triggered.connect(self.open_progression)
         self.editing_action.triggered.connect(self.open_editing)
         self.export_pdf_action.triggered.connect(self.export_project_pdf)
+        self.export_docx_action.triggered.connect(self.export_project_docx)
         self.preview_pdf_action.triggered.connect(self.preview_project_pdf)
 
     def _apply_styles(self) -> None:
@@ -731,6 +760,40 @@ class MainWindow(QMainWindow):
         self.pdf_preview_window.raise_()
         self.pdf_preview_window.activateWindow()
         self.status_label.setText(f"Preview PDF : {result.source_count} fichier(s)")
+
+    def export_project_docx(self) -> None:
+        root = self.file_tree.project_root
+        exporter = DocxProjectExporter(root, self.settings.accepted_extensions)
+        if not exporter.source_paths():
+            QMessageBox.information(
+                self,
+                "Export Word",
+                f"Aucun fichier numerote trouve dans le dossier {TEXTS_DIRNAME}.",
+            )
+            return
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Sauvegarder le document Word",
+            str(root / f"{root.name}.docx"),
+            "Document Word (*.docx)",
+        )
+        if not filename:
+            return
+
+        try:
+            result = exporter.export_docx(Path(filename))
+        except DocxExportError as exc:
+            QMessageBox.critical(self, "Export Word impossible", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Word impossible", str(exc))
+            return
+
+        self.status_label.setText(
+            f"Word sauvegarde : {result.docx_path.name} ({result.source_count} fichier"
+            f"{'s' if result.source_count != 1 else ''})"
+        )
 
     def _ensure_project_defaults(self, project_root: Path) -> None:
         try:
@@ -1201,6 +1264,8 @@ class MainWindow(QMainWindow):
             regular_names,
         )
         visible_indicators.extend(self._cached_llm_indicators())
+        if self._synonym_indicator is not None:
+            visible_indicators.append(self._synonym_indicator)
 
         if "Nature" not in self.enabled_indicator_names:
             self._nature_generation += 1
@@ -1229,6 +1294,76 @@ class MainWindow(QMainWindow):
             self._pending_nature_request = request
         else:
             self._start_nature_analysis(*request)
+
+    def find_selected_word_synonyms(self) -> None:
+        cursor = self.editor.textCursor()
+        word = cursor.selectedText().replace("\u2029", " ").strip()
+        if not word or not all(character.isalpha() or character in "'-’" for character in word):
+            self._synonym_indicator = Indicator(
+                "Synonymes",
+                "Sélectionnez un seul mot",
+                "Sélectionnez le mot à remplacer dans l’éditeur, puis relancez Ctrl+L.",
+                "warning",
+            )
+            self.refresh_indicators()
+            return
+
+        block = cursor.block()
+        block_text = block.text()
+        start = cursor.selectionStart() - block.position()
+        end = cursor.selectionEnd() - block.position()
+        masked_context = f"{block_text[:start]}<mask>{block_text[end:]}".strip()
+        if not masked_context or masked_context == "<mask>":
+            masked_context = "Le mot <mask> est employé dans ce texte."
+
+        self._synonym_indicator = Indicator(
+            "Synonymes",
+            f"Recherche pour « {word} »…",
+            "Interrogation du Wiktionnaire français…",
+            "info",
+        )
+        self.status_label.setText(f"Recherche de synonymes pour « {word} »…")
+        self.refresh_indicators()
+
+        self._synonym_word = word
+        worker = SynonymSearchWorker(word, masked_context)
+        worker.signals.finished.connect(self._on_synonyms_found)
+        self._synonym_worker = worker
+        self.analysis_pool.start(worker)
+
+    def _on_synonyms_found(
+        self,
+        word: str,
+        synonyms: object,
+        used_model: bool,
+        error_message: str,
+    ) -> None:
+        if word != self._synonym_word:
+            return
+        suggestions = [str(item) for item in synonyms] if isinstance(synonyms, list) else []
+        if suggestions:
+            detail = (
+                "Synonymes répertoriés par le Wiktionnaire français."
+                if used_model
+                else "Suggestions du lexique local (modèle Hugging Face indisponible)."
+            )
+            self._synonym_indicator = Indicator(
+                f"Synonymes de « {word} »",
+                " · ".join(suggestions),
+                detail,
+                "success" if used_model else "info",
+            )
+        else:
+            self._synonym_indicator = Indicator(
+                f"Synonymes de « {word} »",
+                "Aucune suggestion",
+                error_message
+                or "Le modèle n’a trouvé aucun synonyme pertinent dans ce contexte.",
+                "warning",
+            )
+        self._synonym_worker = None
+        self.status_label.setText(f"Synonymes prêts pour « {word} »")
+        self.refresh_indicators()
 
     def _start_nature_analysis(self, generation: int, text: str) -> None:
         self._nature_worker_running = True
