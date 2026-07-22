@@ -98,6 +98,28 @@ class SynonymSearchWorker(QRunnable):
         self.signals.finished.emit(self.word, synonyms, True, error_message)
 
 
+class ReformulationSignals(QObject):
+    finished = Signal(str, object, str)
+
+
+class ReformulationWorker(QRunnable):
+    def __init__(self, sentence: str, project_root: Path) -> None:
+        super().__init__()
+        self.sentence = sentence
+        self.project_root = project_root
+        self.signals = ReformulationSignals()
+
+    def run(self) -> None:
+        from app.utils.reformulation import generate_reformulations
+
+        suggestions, error_message = generate_reformulations(
+            self.sentence,
+            limit=3,
+            project_root=self.project_root,
+        )
+        self.signals.finished.emit(self.sentence, suggestions, error_message)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, project_root: Path) -> None:
         super().__init__()
@@ -129,6 +151,9 @@ class MainWindow(QMainWindow):
         self._synonym_worker: SynonymSearchWorker | None = None
         self._synonym_indicator: Indicator | None = None
         self._synonym_word = ""
+        self._reformulation_worker: ReformulationWorker | None = None
+        self._reformulation_indicator: Indicator | None = None
+        self._reformulation_sentence = ""
         self._llm_worker_running = False
         self._active_llm_worker: LLMAnalysisWorker | None = None
         self._active_llm_source_path: Path | None = None
@@ -199,7 +224,7 @@ class MainWindow(QMainWindow):
         syntax_menu = menu_bar.addMenu("Syntaxe")
 
         self.analyze_action = QAction("Rafraîchir l'analyse", self)
-        self.analyze_action.setShortcut("Ctrl+R")
+        self.analyze_action.setShortcut("Ctrl+Shift+R")
         syntax_menu.addAction(self.analyze_action)
         syntax_menu.addSeparator()
         self._add_group_selector(syntax_menu, "syntax")
@@ -266,6 +291,9 @@ class MainWindow(QMainWindow):
         self.find_synonyms_action = QAction("Trouver synonyme", self)
         self.find_synonyms_action.setShortcut("Ctrl+L")
         editing_menu.addAction(self.find_synonyms_action)
+        self.reformulate_action = QAction("Reformuler la sélection", self)
+        self.reformulate_action.setShortcut("Ctrl+R")
+        editing_menu.addAction(self.reformulate_action)
         editing_menu.addSeparator()
         self.editing_action = QAction("Édition des chapitres", self)
         editing_menu.addAction(self.editing_action)
@@ -361,6 +389,7 @@ class MainWindow(QMainWindow):
         self.quit_action.triggered.connect(self.close)
         self.find_replace_action.triggered.connect(self.editor.open_find_replace)
         self.find_synonyms_action.triggered.connect(self.find_selected_word_synonyms)
+        self.reformulate_action.triggered.connect(self.reformulate_selected_sentence)
         self.analyze_action.triggered.connect(self.refresh_indicators)
         self.folder_report_action.triggered.connect(self.open_folder_report)
         self.graph_action.triggered.connect(self.open_graph)
@@ -874,6 +903,11 @@ class MainWindow(QMainWindow):
                     font-weight: 500;
                     margin-top: 110px;
                 }
+                p.scenechange {
+                    margin: 14px 0;
+                    text-align: center;
+                    text-indent: 0;
+                }
                 p {
                     margin: 0 0 4px 0;
                     text-indent: 13px;
@@ -914,6 +948,13 @@ class MainWindow(QMainWindow):
 
         while index < len(content):
             matched = False
+            if content.startswith("\\scenechange", index):
+                next_index = index + len("\\scenechange")
+                if next_index >= len(content) or not content[next_index].isalpha():
+                    flush_buffer()
+                    blocks.append(("scenechange", "* * *"))
+                    index = next_index
+                    continue
             for tag, kind in tags.items():
                 opening = f"\\{tag}" + "{"
                 if not content.startswith(opening, index):
@@ -1027,6 +1068,8 @@ class MainWindow(QMainWindow):
                 parts.append(f'<h2 class="chapter">{escaped}</h2>')
             elif kind == "subchapter":
                 parts.append(f'<h3 class="subchapter">{escaped}</h3>')
+            elif kind == "scenechange":
+                parts.append(f'<p class="scenechange">{escaped}</p>')
             elif kind == "dialogue":
                 parts.append(f'<p class="dialogue">&mdash; {escaped}</p>')
             else:
@@ -1266,6 +1309,8 @@ class MainWindow(QMainWindow):
         visible_indicators.extend(self._cached_llm_indicators())
         if self._synonym_indicator is not None:
             visible_indicators.append(self._synonym_indicator)
+        if self._reformulation_indicator is not None:
+            visible_indicators.append(self._reformulation_indicator)
 
         if "Nature" not in self.enabled_indicator_names:
             self._nature_generation += 1
@@ -1363,6 +1408,72 @@ class MainWindow(QMainWindow):
             )
         self._synonym_worker = None
         self.status_label.setText(f"Synonymes prêts pour « {word} »")
+        self.refresh_indicators()
+
+    def reformulate_selected_sentence(self) -> None:
+        cursor = self.editor.textCursor()
+        sentence = cursor.selectedText().replace("\u2029", " ").strip()
+        if not sentence:
+            self._reformulation_indicator = Indicator(
+                "Reformulation",
+                "Sélectionnez une phrase",
+                "Sélectionnez la phrase à reformuler dans l’éditeur, puis relancez Ctrl+R.",
+                "warning",
+            )
+            self.refresh_indicators()
+            return
+
+        self._reformulation_sentence = sentence
+        self._reformulation_indicator = Indicator(
+            "Reformulation",
+            "Génération en cours…",
+            "Génération de 3 propositions de réécriture littéraire.",
+            "info",
+        )
+        self.status_label.setText("Reformulation en cours…")
+        self.refresh_indicators()
+
+        worker = ReformulationWorker(sentence, self.file_tree.project_root)
+        worker.signals.finished.connect(self._on_reformulations_found)
+        self._reformulation_worker = worker
+        self.analysis_pool.start(worker)
+
+    def _on_reformulations_found(
+        self,
+        sentence: str,
+        suggestions: object,
+        error_message: str,
+    ) -> None:
+        if sentence != self._reformulation_sentence:
+            return
+
+        reformulations = [
+            str(item).strip()
+            for item in suggestions
+            if str(item).strip()
+        ] if isinstance(suggestions, list) else []
+        if reformulations:
+            detail = "\n\n".join(
+                f"{index}. {suggestion}"
+                for index, suggestion in enumerate(reformulations[:3], 1)
+            )
+            self._reformulation_indicator = Indicator(
+                "Reformulations",
+                f"Phrase sélectionnée : « {sentence} »",
+                detail,
+                "success",
+            )
+            self.status_label.setText("Reformulations prêtes")
+        else:
+            self._reformulation_indicator = Indicator(
+                "Reformulation",
+                "Aucune proposition",
+                error_message or "Le modèle n’a pas produit de proposition exploitable.",
+                "warning",
+            )
+            self.status_label.setText("Reformulation sans résultat")
+
+        self._reformulation_worker = None
         self.refresh_indicators()
 
     def _start_nature_analysis(self, generation: int, text: str) -> None:

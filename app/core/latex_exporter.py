@@ -13,6 +13,10 @@ COMMANDS_FILENAME = "yuumi_commands.tex"
 BUILD_DIRNAME = ".yuumi_latex"
 IGNORED_LATEX_DIRECTORIES = {BUILD_DIRNAME.casefold(), "notes"}
 YUUMI_INLINE_COMMANDS = ("rep", "scenechange", "chaptersubtitle")
+OLD_REP_COMMAND = r"\newcommand{\rep}[1]{\par\noindent--- #1\par}"
+INLINE_REP_COMMAND = r"\newcommand{\rep}[1]{--- #1}"
+OLD_SCENECHANGE_COMMAND = r"\newcommand{\scenechange}{\par\bigskip\begin{center}* * *\end{center}\bigskip\par}"
+CENTERED_SCENECHANGE_COMMAND = r"\newcommand{\scenechange}{\par\bigskip\noindent\hfill * * *\hfill\null\par\bigskip}"
 
 
 DEFAULT_COMMANDS = r"""\usepackage[french]{babel}
@@ -43,8 +47,8 @@ DEFAULT_COMMANDS = r"""\usepackage[french]{babel}
   {0pt}
   {}
 
-\newcommand{\rep}[1]{\par\noindent--- #1\par}
-\newcommand{\scenechange}{\par\bigskip\begin{center}* * *\end{center}\bigskip\par}
+\newcommand{\rep}[1]{--- #1}
+\newcommand{\scenechange}{\par\bigskip\noindent\hfill * * *\hfill\null\par\bigskip}
 \newcommand{\chaptersubtitle}[1]{\begin{center}\large\itshape #1\end{center}\medskip}
 """
 
@@ -160,6 +164,12 @@ def ensure_project_latex_defaults(project_root: Path) -> Path:
     else:
         content = commands_path.read_text(encoding="utf-8")
         changed = False
+        if OLD_REP_COMMAND in content:
+            content = content.replace(OLD_REP_COMMAND, INLINE_REP_COMMAND)
+            changed = True
+        if OLD_SCENECHANGE_COMMAND in content:
+            content = content.replace(OLD_SCENECHANGE_COMMAND, CENTERED_SCENECHANGE_COMMAND)
+            changed = True
         if POCKET_LAYOUT_MARKER not in content:
             content = content.rstrip() + "\n" + POCKET_LAYOUT_COMMANDS
             changed = True

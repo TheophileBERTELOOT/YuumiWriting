@@ -13,7 +13,7 @@ class DocxExporterTest(unittest.TestCase):
             texts = root / "Textes"
             texts.mkdir()
             (texts / "chapitre 1.tex").write_text(
-                "\\chapter{Le début}\n\nBonjour \\emph{Yuumi}.\n\n\\scenechange",
+                "\\chapter{Le début}\n\nBonjour \\rep{Yuumi}.\n\n\\scenechange",
                 encoding="utf-8",
             )
             output = root / "roman.docx"
@@ -24,8 +24,9 @@ class DocxExporterTest(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 document = archive.read("word/document.xml").decode("utf-8")
             self.assertIn("Le début", document)
-            self.assertIn("Bonjour Yuumi.", document)
+            self.assertIn("Bonjour — Yuumi.", document)
             self.assertIn("* * *", document)
+            self.assertIn('<w:jc w:val="center"/>', document)
 
 
 if __name__ == "__main__":

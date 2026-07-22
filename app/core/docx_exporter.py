@@ -54,10 +54,10 @@ class DocxProjectExporter:
     @classmethod
     def _paragraphs(cls, source: str) -> list[tuple[str, str]]:
         source = re.sub(r"(?m)%.*$", "", source)
-        source = re.sub(r"\\scenechange\b", "\n\n* * *\n\n", source)
+        source = re.sub(r"\\scenechange\b", "\n\n[[SCENECHANGE]]* * *\n\n", source)
         source = re.sub(r"\\(?:chapter|chapter\*)\{([^{}]*)\}", r"\n\n[[HEADING]]\1\n\n", source)
         source = re.sub(r"\\chaptersubtitle\{([^{}]*)\}", r"\n\n[[SUBTITLE]]\1\n\n", source)
-        source = re.sub(r"\\rep\{([^{}]*)\}", r"\n\n— \1\n\n", source)
+        source = re.sub(r"\\rep\{([^{}]*)\}", r"— \1", source)
         source = re.sub(r"\\(?:textit|emph)\{([^{}]*)\}", r"\1", source)
         source = re.sub(r"\\(?:textbf|textsc)\{([^{}]*)\}", r"\1", source)
         source = re.sub(r"\\(?:begin|end)\{[^{}]+\}", "", source)
@@ -76,6 +76,8 @@ class DocxProjectExporter:
                 result.append(("heading", text.removeprefix("[[HEADING]]").strip()))
             elif text.startswith("[[SUBTITLE]]"):
                 result.append(("subtitle", text.removeprefix("[[SUBTITLE]]").strip()))
+            elif text.startswith("[[SCENECHANGE]]"):
+                result.append(("scenechange", text.removeprefix("[[SCENECHANGE]]").strip()))
             else:
                 result.append(("body", text))
         return result
@@ -90,6 +92,7 @@ class DocxProjectExporter:
             properties = {
                 "heading": '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>',
                 "subtitle": '<w:pPr><w:pStyle w:val="Subtitle"/></w:pPr>',
+                "scenechange": '<w:pPr><w:jc w:val="center"/></w:pPr>',
                 "body": "",
             }[kind]
             body.append(f'<w:p>{properties}<w:r><w:t xml:space="preserve">{escape(text)}</w:t></w:r></w:p>')

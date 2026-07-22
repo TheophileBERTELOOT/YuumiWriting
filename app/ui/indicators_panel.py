@@ -15,15 +15,26 @@ from PySide6.QtWidgets import (
 from app.analysis.analyzer_base import Indicator
 
 
+SELECTABLE_TEXT_FLAGS = (
+    Qt.TextInteractionFlag.TextSelectableByMouse
+    | Qt.TextInteractionFlag.TextSelectableByKeyboard
+)
+
+
+def make_label_selectable(label: QLabel) -> QLabel:
+    label.setTextInteractionFlags(SELECTABLE_TEXT_FLAGS)
+    return label
+
+
 class IndicatorCard(QWidget):
     def __init__(self, indicator: Indicator) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
 
-        title = QLabel(f"<b>{indicator.name}</b>")
-        value = QLabel(indicator.value)
-        detail = QLabel(indicator.detail)
+        title = make_label_selectable(QLabel(f"<b>{indicator.name}</b>"))
+        value = make_label_selectable(QLabel(indicator.value))
+        detail = make_label_selectable(QLabel(indicator.detail))
         title.setWordWrap(True)
         value.setWordWrap(True)
         detail.setWordWrap(True)
@@ -62,7 +73,7 @@ class SentenceLengthHistogram(QWidget):
             row = QHBoxLayout()
             row.setSpacing(6)
 
-            range_label = QLabel(label)
+            range_label = make_label_selectable(QLabel(label))
             range_label.setFixedWidth(38)
             range_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -78,7 +89,7 @@ class SentenceLengthHistogram(QWidget):
                 "QProgressBar::chunk { background: #7ca6d9; border-radius: 4px; }"
             )
 
-            count_label = QLabel(str(count))
+            count_label = make_label_selectable(QLabel(str(count)))
             count_label.setFixedWidth(24)
             count_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -117,10 +128,10 @@ class CollapsibleReport(QWidget):
 
         for text, count in items:
             row = QHBoxLayout()
-            item_label = QLabel(text)
+            item_label = make_label_selectable(QLabel(text))
             item_label.setTextFormat(Qt.TextFormat.PlainText)
             item_label.setWordWrap(True)
-            count_label = QLabel(f"× {count}")
+            count_label = make_label_selectable(QLabel(f"× {count}"))
             count_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
             )
@@ -130,7 +141,7 @@ class CollapsibleReport(QWidget):
             content_layout.addLayout(row)
 
         if not items:
-            empty_label = QLabel("Aucun mot")
+            empty_label = make_label_selectable(QLabel("Aucun mot"))
             empty_label.setProperty("muted", True)
             content_layout.addWidget(empty_label)
 
