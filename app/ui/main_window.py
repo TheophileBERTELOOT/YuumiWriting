@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from PySide6.QtCore import QMarginsF, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QMarginsF, QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QPageLayout, QPageSize, QPdfWriter, QTextDocument
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -124,6 +124,8 @@ class MainWindow(QMainWindow):
     def __init__(self, project_root: Path) -> None:
         super().__init__()
         self.settings = AppSettings(default_project_root=project_root)
+        self.user_settings = QSettings("YuumiWriting", "YuumiWriting")
+        self.dark_mode = self.user_settings.value("appearance/dark_mode", False, type=bool)
         self.document_manager = DocumentManager()
         self.analyzers = AnalyzerRegistry()
         self.llm_registry = LLMAnalysisRegistry()
@@ -306,6 +308,12 @@ class MainWindow(QMainWindow):
         menu_bar.addAction(self.timeline_action)
         self.progression_action = QAction("Progression", self)
         menu_bar.addAction(self.progression_action)
+        self._add_menu_separator(menu_bar)
+        view_menu = menu_bar.addMenu("Affichage")
+        self.dark_mode_action = QAction("Mode sombre", self)
+        self.dark_mode_action.setCheckable(True)
+        self.dark_mode_action.setChecked(self.dark_mode)
+        view_menu.addAction(self.dark_mode_action)
         self._build_export_pdf_corner(menu_bar)
 
     def _build_export_pdf_corner(self, menu_bar) -> None:
@@ -399,10 +407,10 @@ class MainWindow(QMainWindow):
         self.export_pdf_action.triggered.connect(self.export_project_pdf)
         self.export_docx_action.triggered.connect(self.export_project_docx)
         self.preview_pdf_action.triggered.connect(self.preview_project_pdf)
+        self.dark_mode_action.toggled.connect(self._set_dark_mode)
 
     def _apply_styles(self) -> None:
-        self.setStyleSheet(
-            """
+        dark_style = """
             QMainWindow {
                 background: #202124;
             }
@@ -456,8 +464,8 @@ class MainWindow(QMainWindow):
                 background: #555862;
             }
             QTextEdit {
-                background: #fbf7ef;
-                color: #000000;
+                background: #1e1f22;
+                color: #e8e6e3;
                 padding: 22px;
                 border: none;
                 selection-background-color: #d9c7a3;
@@ -471,6 +479,11 @@ class MainWindow(QMainWindow):
             QScrollArea {
                 background: #26272b;
                 border: none;
+            }
+            QScrollArea#indicatorsPanel,
+            QScrollArea#indicatorsPanel > QWidget > QWidget,
+            QWidget#indicatorsContainer {
+                background: #26272b;
             }
             QWidget#indicatorCard {
                 background: #33343a;
@@ -497,8 +510,58 @@ class MainWindow(QMainWindow):
                 background: #2d2e33;
                 color: white;
             }
+            QLineEdit, QPushButton {
+                background: #33343a;
+                color: #eeeeee;
+                border: 1px solid #555862;
+                padding: 5px;
+            }
             """
-        )
+        light_style = """
+            QMainWindow { background: #f3f3f3; }
+            QMenuBar, QWidget#topBarExportGroup, QStatusBar {
+                background: #f7f7f7; color: #202124;
+            }
+            QMenuBar { padding: 3px; }
+            QMenuBar::item { background: transparent; padding: 6px 12px; }
+            QMenuBar::item:selected { background: #e1e3e6; border-radius: 4px; }
+            QFrame#topBarExportSeparator { color: #c5c7ca; background: #c5c7ca; margin: 5px 0; max-width: 1px; }
+            QToolButton#exportPdfButton { background: transparent; color: #202124; border: none; padding: 6px 12px; font-weight: 600; }
+            QToolButton#exportPdfButton:hover { background: #e1e3e6; border-radius: 4px; }
+            QMenu { background: white; color: #202124; border: 1px solid #c9cbd0; }
+            QMenu::item { padding: 7px 28px 7px 24px; }
+            QMenu::item:selected { background: #e7edf7; }
+            QTextEdit { background: #fbf7ef; color: #000000; padding: 22px; border: none; selection-background-color: #d9c7a3; }
+            QTreeView, QScrollArea, QScrollArea > QWidget > QWidget { background: #f1f2f4; color: #202124; border: none; }
+            QScrollArea#indicatorsPanel,
+            QScrollArea#indicatorsPanel > QWidget > QWidget,
+            QWidget#indicatorsContainer { background: #f1f2f4; }
+            QTreeView { padding: 4px; }
+            QWidget#indicatorCard { background: white; border-radius: 8px; color: #202124; }
+            QWidget#indicatorCard QLabel, QWidget#indicatorCard QToolButton { color: #202124; }
+            QWidget#indicatorCard[severity="success"] { border-left: 5px solid #4d8c52; }
+            QWidget#indicatorCard[severity="warning"] { border-left: 5px solid #b38322; }
+            QWidget#indicatorCard[severity="danger"] { border-left: 5px solid #bd4f4f; }
+            QWidget#indicatorCard[severity="info"] { border-left: 5px solid #5685bd; }
+            QStatusBar { border-top: 1px solid #d4d5d8; }
+            """
+        self.setStyleSheet(dark_style if self.dark_mode else light_style)
+        self.editor.set_dark_mode(self.dark_mode)
+
+    def _set_dark_mode(self, enabled: bool) -> None:
+        self.dark_mode = enabled
+        self.user_settings.setValue("appearance/dark_mode", enabled)
+        self._apply_styles()
+        for window in (
+            self.folder_report_window,
+            self.graph_window,
+            self.timeline_window,
+            self.progression_window,
+            self.editing_window,
+            self.pdf_preview_window,
+        ):
+            if window is not None:
+                window.setStyleSheet(self.styleSheet())
 
     def _toggle_indicator(
         self,

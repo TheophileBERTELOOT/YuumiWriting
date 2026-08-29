@@ -159,11 +159,11 @@ class CollapsibleReport(QWidget):
 class IndicatorsPanel(QScrollArea):
     def __init__(self) -> None:
         super().__init__()
+        self.setObjectName("indicatorsPanel")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.viewport().setStyleSheet("background: #26272b;")
-
         self.container = QWidget()
+        self.container.setObjectName("indicatorsContainer")
         self.container.setSizePolicy(
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Preferred,

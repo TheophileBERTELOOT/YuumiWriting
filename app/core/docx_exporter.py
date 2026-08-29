@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from app.core.latex_exporter import LatexProjectExporter
+from app.core.latex_exporter import (
+    LatexProjectExporter,
+    ensure_project_latex_defaults,
+    read_project_language,
+)
 
 
 @dataclass(slots=True)
@@ -30,6 +34,8 @@ class DocxProjectExporter:
         return LatexProjectExporter(self.project_root, self.extensions).source_paths()
 
     def export_docx(self, output_path: Path) -> DocxExportResult:
+        ensure_project_latex_defaults(self.project_root)
+        language = read_project_language(self.project_root)
         paths = self.source_paths()
         if not paths:
             raise DocxExportError("Aucun chapitre numerote trouve pour l'export Word.")
@@ -43,7 +49,12 @@ class DocxProjectExporter:
         for index, path in enumerate(paths):
             if index:
                 paragraphs.append(("pagebreak", ""))
-            paragraphs.extend(self._paragraphs(path.read_text(encoding="utf-8", errors="replace")))
+            paragraphs.extend(
+                self._paragraphs(
+                    path.read_text(encoding="utf-8", errors="replace"),
+                    language,
+                )
+            )
 
         try:
             self._write_docx(output_path, paragraphs)
@@ -52,12 +63,13 @@ class DocxProjectExporter:
         return DocxExportResult(output_path, len(paths))
 
     @classmethod
-    def _paragraphs(cls, source: str) -> list[tuple[str, str]]:
+    def _paragraphs(cls, source: str, language: str = "fr") -> list[tuple[str, str]]:
         source = re.sub(r"(?m)%.*$", "", source)
         source = re.sub(r"\\scenechange\b", "\n\n[[SCENECHANGE]]* * *\n\n", source)
         source = re.sub(r"\\(?:chapter|chapter\*)\{([^{}]*)\}", r"\n\n[[HEADING]]\1\n\n", source)
         source = re.sub(r"\\chaptersubtitle\{([^{}]*)\}", r"\n\n[[SUBTITLE]]\1\n\n", source)
-        source = re.sub(r"\\rep\{([^{}]*)\}", r"— \1", source)
+        dialogue_template = r"“\1”" if language.casefold() == "en" else r"— \1"
+        source = re.sub(r"\\rep\{([^{}]*)\}", dialogue_template, source)
         source = re.sub(r"\\(?:textit|emph)\{([^{}]*)\}", r"\1", source)
         source = re.sub(r"\\(?:textbf|textsc)\{([^{}]*)\}", r"\1", source)
         source = re.sub(r"\\(?:begin|end)\{[^{}]+\}", "", source)

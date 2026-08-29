@@ -75,6 +75,7 @@ class TextEditor(QTextEdit):
     def __init__(self) -> None:
         super().__init__()
         self._find_dialog: FindReplaceDialog | None = None
+        self._dark_mode = False
         self._highlighted_search_text = ""
         self._highlight_format = QTextCharFormat()
         self._highlight_format.setBackground(QColor("#f2d45c"))
@@ -93,6 +94,15 @@ class TextEditor(QTextEdit):
         self.document().setDefaultTextOption(text_option)
         self._apply_plain_black_text_format()
         self.textChanged.connect(self._refresh_search_highlights)
+
+    def set_dark_mode(self, enabled: bool) -> None:
+        """Adapte la couleur de saisie aux changements de thème."""
+        self._dark_mode = enabled
+        text_format = QTextCharFormat()
+        text_format.setForeground(QColor("#e8e6e3" if enabled else "#000000"))
+        text_format.setBackground(Qt.GlobalColor.transparent)
+        self.setCurrentCharFormat(text_format)
+        self.mergeCurrentCharFormat(text_format)
 
     def text(self) -> str:
         return self.toPlainText()
@@ -156,7 +166,7 @@ class TextEditor(QTextEdit):
 
     def _apply_plain_black_text_format(self) -> None:
         text_format = QTextCharFormat()
-        text_format.setForeground(QColor("#000000"))
+        text_format.setForeground(QColor("#e8e6e3" if self._dark_mode else "#000000"))
         text_format.setBackground(Qt.GlobalColor.transparent)
         self.setCurrentCharFormat(text_format)
         self.mergeCurrentCharFormat(text_format)

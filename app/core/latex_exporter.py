@@ -15,11 +15,18 @@ IGNORED_LATEX_DIRECTORIES = {BUILD_DIRNAME.casefold(), "notes"}
 YUUMI_INLINE_COMMANDS = ("rep", "scenechange", "chaptersubtitle")
 OLD_REP_COMMAND = r"\newcommand{\rep}[1]{\par\noindent--- #1\par}"
 INLINE_REP_COMMAND = r"\newcommand{\rep}[1]{--- #1}"
+LANGUAGE_AWARE_REP_COMMAND = (
+    r"\newcommand{\rep}[1]{\ifthenelse{\equal{\yuumilanguage}{en}}{``#1''}{--- #1}}"
+)
 OLD_SCENECHANGE_COMMAND = r"\newcommand{\scenechange}{\par\bigskip\begin{center}* * *\end{center}\bigskip\par}"
 CENTERED_SCENECHANGE_COMMAND = r"\newcommand{\scenechange}{\par\bigskip\noindent\hfill * * *\hfill\null\par\bigskip}"
 
 
-DEFAULT_COMMANDS = r"""\usepackage[french]{babel}
+DEFAULT_COMMANDS = r"""% YuumiWriting language: use fr or en
+\newcommand{\yuumilanguage}{fr}
+\usepackage{ifthen}
+\usepackage[english,french]{babel}
+\AtBeginDocument{\ifthenelse{\equal{\yuumilanguage}{en}}{\selectlanguage{english}}{\selectlanguage{french}}}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{microtype}
@@ -47,10 +54,20 @@ DEFAULT_COMMANDS = r"""\usepackage[french]{babel}
   {0pt}
   {}
 
-\newcommand{\rep}[1]{--- #1}
+\newcommand{\rep}[1]{\ifthenelse{\equal{\yuumilanguage}{en}}{``#1''}{--- #1}}
 \newcommand{\scenechange}{\par\bigskip\noindent\hfill * * *\hfill\null\par\bigskip}
 \newcommand{\chaptersubtitle}[1]{\begin{center}\large\itshape #1\end{center}\medskip}
 """
+
+LANGUAGE_CONFIG_MARKER = "% YuumiWriting language: use fr or en"
+LANGUAGE_CONFIG_COMMANDS = r"""% YuumiWriting language: use fr or en
+\newcommand{\yuumilanguage}{fr}
+\usepackage{ifthen}
+"""
+LANGUAGE_SELECTION_COMMAND = (
+    r"\AtBeginDocument{\ifthenelse{\equal{\yuumilanguage}{en}}"
+    r"{\selectlanguage{english}}{\selectlanguage{french}}}"
+)
 
 POCKET_LAYOUT_MARKER = "% YuumiWriting pocket layout"
 POCKET_LAYOUT_COMMANDS = r"""
@@ -151,6 +168,20 @@ class LatexExportError(RuntimeError):
     pass
 
 
+def read_project_language(project_root: Path) -> str:
+    """Lit la langue fr/en choisie dans yuumi_commands.tex."""
+    commands_path = project_root.resolve() / COMMANDS_FILENAME
+    if not commands_path.exists():
+        return "fr"
+    content = commands_path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(
+        r"\\(?:newcommand|renewcommand)\s*\{\\yuumilanguage\}\s*\{\s*(fr|en)\s*\}",
+        content,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).casefold() if match else "fr"
+
+
 def ensure_project_latex_defaults(project_root: Path) -> Path:
     project_root = project_root.resolve()
     texts_dir = project_root / TEXTS_DIRNAME
@@ -165,8 +196,30 @@ def ensure_project_latex_defaults(project_root: Path) -> Path:
         content = commands_path.read_text(encoding="utf-8")
         changed = False
         if OLD_REP_COMMAND in content:
-            content = content.replace(OLD_REP_COMMAND, INLINE_REP_COMMAND)
+            content = content.replace(OLD_REP_COMMAND, LANGUAGE_AWARE_REP_COMMAND)
             changed = True
+        if INLINE_REP_COMMAND in content:
+            content = content.replace(INLINE_REP_COMMAND, LANGUAGE_AWARE_REP_COMMAND)
+            changed = True
+        if LANGUAGE_CONFIG_MARKER not in content:
+            content = LANGUAGE_CONFIG_COMMANDS + content.lstrip()
+            changed = True
+        if r"\usepackage[french]{babel}" in content:
+            content = content.replace(
+                r"\usepackage[french]{babel}",
+                r"\usepackage[english,french]{babel}",
+                1,
+            )
+            changed = True
+        if LANGUAGE_SELECTION_COMMAND not in content:
+            babel_command = r"\usepackage[english,french]{babel}"
+            if babel_command in content:
+                content = content.replace(
+                    babel_command,
+                    babel_command + "\n" + LANGUAGE_SELECTION_COMMAND,
+                    1,
+                )
+                changed = True
         if OLD_SCENECHANGE_COMMAND in content:
             content = content.replace(OLD_SCENECHANGE_COMMAND, CENTERED_SCENECHANGE_COMMAND)
             changed = True

@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.latex_exporter import COMMANDS_FILENAME, ensure_project_latex_defaults
+from app.core.latex_exporter import (
+    COMMANDS_FILENAME,
+    LANGUAGE_AWARE_REP_COMMAND,
+    ensure_project_latex_defaults,
+)
 
 INLINE_SCENECHANGE = r"\newcommand{\scenechange}{\par\bigskip\noindent\hfill * * *\hfill\null\par\bigskip}"
 OLD_SCENECHANGE = r"\newcommand{\scenechange}{\par\bigskip\begin{center}* * *\end{center}\bigskip\par}"
@@ -16,7 +20,9 @@ class LatexExporterTest(unittest.TestCase):
             ensure_project_latex_defaults(root)
 
             commands = (root / COMMANDS_FILENAME).read_text(encoding="utf-8")
-            self.assertIn(r"\newcommand{\rep}[1]{--- #1}", commands)
+            self.assertIn(LANGUAGE_AWARE_REP_COMMAND, commands)
+            self.assertIn(r"\newcommand{\yuumilanguage}{fr}", commands)
+            self.assertIn(r"\usepackage[english,french]{babel}", commands)
             self.assertNotIn(r"\newcommand{\rep}[1]{\par\noindent--- #1\par}", commands)
             self.assertIn(INLINE_SCENECHANGE, commands)
             self.assertNotIn(OLD_SCENECHANGE, commands)
@@ -32,8 +38,27 @@ class LatexExporterTest(unittest.TestCase):
             ensure_project_latex_defaults(root)
 
             commands = (root / COMMANDS_FILENAME).read_text(encoding="utf-8")
-            self.assertIn(r"\newcommand{\rep}[1]{--- #1}", commands)
+            self.assertIn(LANGUAGE_AWARE_REP_COMMAND, commands)
             self.assertNotIn(r"\newcommand{\rep}[1]{\par\noindent--- #1\par}", commands)
+
+    def test_existing_english_language_choice_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / COMMANDS_FILENAME).write_text(
+                "% YuumiWriting language: use fr or en\n"
+                r"\newcommand{\yuumilanguage}{en}" "\n"
+                r"\usepackage{ifthen}" "\n"
+                r"\usepackage[english,french]{babel}" "\n"
+                + LANGUAGE_AWARE_REP_COMMAND,
+                encoding="utf-8",
+            )
+
+            ensure_project_latex_defaults(root)
+
+            commands = (root / COMMANDS_FILENAME).read_text(encoding="utf-8")
+            self.assertIn(r"\newcommand{\yuumilanguage}{en}", commands)
+            self.assertNotIn(r"\newcommand{\yuumilanguage}{fr}", commands)
+            self.assertIn(LANGUAGE_AWARE_REP_COMMAND, commands)
 
     def test_scenechange_command_migrates_to_centered_definition(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
