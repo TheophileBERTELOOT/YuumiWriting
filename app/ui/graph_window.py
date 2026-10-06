@@ -34,14 +34,21 @@ from PySide6.QtWidgets import (
 
 
 NODE_COLORS = (
-    "#4f86c6",
-    "#7f6bb3",
-    "#4c9f70",
-    "#c77d4f",
-    "#b85c7a",
-    "#3e9ca6",
-    "#9a8b42",
-    "#8a6b52",
+    "#E6194B",  # rouge
+    "#3CB44B",  # vert
+    "#4363D8",  # bleu
+    "#F58231",  # orange
+    "#911EB4",  # violet
+    "#00A6A6",  # turquoise
+    "#F032E6",  # magenta
+    "#8A9A00",  # vert olive
+    "#0082C8",  # bleu ciel
+    "#9A6324",  # brun
+    "#2F3E9E",  # indigo
+    "#C2185B",  # framboise
+    "#00796B",  # sarcelle
+    "#A61C00",  # rouge brique
+    "#5C677D",  # gris ardoise
 )
 EDGE_COLORS = ("#7ca6d9", "#d6aa4c", "#76b37a", "#d46a6a", "#b594d6")
 EDGE_STYLES = (
@@ -175,10 +182,11 @@ class NodeData:
 
 
 class NodeItem(QGraphicsEllipseItem):
-    def __init__(self, data: NodeData, edit_callback: Callable[[str], None]) -> None:
+    def __init__(self, data: NodeData, edit_callback: Callable[[str], None], color_resolver: Callable[[str], str]) -> None:
         super().__init__(-58, -58, 116, 116)
         self.data = data
         self.edit_callback = edit_callback
+        self.color_resolver = color_resolver
         self.edges: list[EdgeItem] = []
         self.label = QGraphicsSimpleTextItem(self)
         self.label.setBrush(QBrush(Qt.GlobalColor.white))
@@ -192,9 +200,12 @@ class NodeItem(QGraphicsEllipseItem):
         self.refresh()
 
     def refresh(self) -> None:
-        color = QColor(NODE_COLORS[_stable_index(self.data.type, len(NODE_COLORS))])
+        color = QColor(self.color_resolver(self.data.type))
         self.setBrush(QBrush(color))
         self.setPen(QPen(QColor("#f1f1f1") if self.isSelected() else color.lighter(125), 2))
+        # Le texte reste lisible, y compris sur les couleurs orange et vert clair.
+        luminance = 0.2126 * color.red() + 0.7152 * color.green() + 0.0722 * color.blue()
+        self.label.setBrush(QBrush(QColor("#111111") if luminance > 155 else Qt.GlobalColor.white))
         metrics = QFontMetricsF(self.label.font())
         self.label.setText(metrics.elidedText(self.data.name, Qt.TextElideMode.ElideRight, 92))
         bounds = self.label.boundingRect()
@@ -297,6 +308,7 @@ class GraphWindow(QMainWindow):
         self.current_path: Path | None = None
         self.nodes: dict[str, NodeItem] = {}
         self.edges: dict[str, EdgeItem] = {}
+        self._node_type_colors: dict[str, str] = {}
         self._next_id = 1
         self.setWindowTitle("Graphe")
         self.resize(1100, 760)
@@ -341,24 +353,52 @@ class GraphWindow(QMainWindow):
     def edge_types(self) -> set[str]:
         return {item.data.type for item in self.edges.values() if item.data.type}
 
+    @staticmethod
+    def _type_key(node_type: str) -> str:
+        return node_type.strip().casefold() or "sans type"
+
+    def _node_color(self, node_type: str) -> str:
+        key = self._type_key(node_type)
+        return self._node_type_colors.get(key, NODE_COLORS[_stable_index(key, len(NODE_COLORS))])
+
+    def _refresh_node_colors(self) -> None:
+        """Attribue une couleur distincte à chaque type tant que la palette le permet."""
+        keys = sorted({self._type_key(item.data.type) for item in self.nodes.values()})
+        colors: dict[str, str] = {}
+        used_indexes: set[int] = set()
+        for key in keys:
+            start = _stable_index(key, len(NODE_COLORS))
+            index = start
+            for offset in range(len(NODE_COLORS)):
+                candidate = (start + offset) % len(NODE_COLORS)
+                if candidate not in used_indexes:
+                    index = candidate
+                    break
+            colors[key] = NODE_COLORS[index]
+            used_indexes.add(index)
+        self._node_type_colors = colors
+        for item in self.nodes.values():
+            item.refresh()
+
     def create_node(self) -> None:
         dialog = NodeDialog(self.node_types(), parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         name, node_type, text = dialog.values()
         data = NodeData(self._new_id("n"), name, node_type, text)
-        item = NodeItem(data, self.edit_node)
+        item = NodeItem(data, self.edit_node, self._node_color)
         offset = len(self.nodes) * 35
         item.setPos(-180 + offset % 540, -120 + (offset // 540) * 110)
         self.nodes[data.id] = item
         self.scene.addItem(item)
+        self._refresh_node_colors()
 
     def edit_node(self, node_id: str) -> None:
         item = self.nodes[node_id]
         dialog = NodeDialog(self.node_types(), item.data.name, item.data.type, item.data.text, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             item.data.name, item.data.type, item.data.text = dialog.values()
-            item.refresh()
+            self._refresh_node_colors()
 
     def create_edge(self) -> None:
         if not self.nodes:
@@ -421,6 +461,7 @@ class GraphWindow(QMainWindow):
             node = self.nodes.pop(node_id, None)
             if node is not None:
                 self.scene.removeItem(node)
+        self._refresh_node_colors()
 
     def auto_arrange_graph(self) -> None:
         if not self.nodes:
@@ -585,6 +626,7 @@ class GraphWindow(QMainWindow):
         self.scene.clear()
         self.nodes.clear()
         self.edges.clear()
+        self._node_type_colors.clear()
         self.current_path = None
         self._next_id = 1
         self.setWindowTitle("Graphe")
@@ -632,12 +674,13 @@ class GraphWindow(QMainWindow):
             numeric_ids: list[int] = []
             for raw in nodes:
                 data = NodeData(str(raw["id"]), str(raw.get("name", "")), str(raw.get("type", "")), str(raw.get("text", "")))
-                item = NodeItem(data, self.edit_node)
+                item = NodeItem(data, self.edit_node, self._node_color)
                 item.setPos(float(raw.get("x", 0)), float(raw.get("y", 0)))
                 self.nodes[data.id] = item
                 self.scene.addItem(item)
                 if data.id[1:].isdigit():
                     numeric_ids.append(int(data.id[1:]))
+            self._refresh_node_colors()
             for raw in edges:
                 data = EdgeData(str(raw["id"]), str(raw["source"]), str(raw["target"]), str(raw.get("type", "")), str(raw.get("text", "")))
                 if data.source not in self.nodes or data.target not in self.nodes:

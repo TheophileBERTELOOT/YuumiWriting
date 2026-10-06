@@ -1,4 +1,8 @@
-\usepackage[french]{babel}
+% YuumiWriting language: use fr or en
+\newcommand{\yuumilanguage}{fr}
+\usepackage{ifthen}
+\usepackage[english,french]{babel}
+\AtBeginDocument{\ifthenelse{\equal{\yuumilanguage}{en}}{\selectlanguage{english}}{\selectlanguage{french}}}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{microtype}
@@ -31,7 +35,7 @@
   {0pt}
   {}
 
-\newcommand{\rep}[1]{--- #1}
+\newcommand{\rep}[1]{\ifthenelse{\equal{\yuumilanguage}{en}}{``#1''}{--- #1}}
 \newcommand{\scenechange}{\par\bigskip\noindent\hfill * * *\hfill\null\par\bigskip}
 \newcommand{\chaptersubtitle}[1]{\begin{center}\large\itshape #1\end{center}\medskip}
 
